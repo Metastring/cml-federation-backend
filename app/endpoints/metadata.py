@@ -5,18 +5,21 @@ from psycopg2.extras import RealDictCursor
 router = APIRouter()
 
 @router.get("/metadata")
-def get_metadata(dataset_name: str, category_name: str):
+def get_metadata(title: str, category_name: str):
     conn = get_connection()
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        
+
+        # SQL query to gather all relevant details from various tables
         cursor.execute("""
             SELECT
                 cat.category_name,
-                ds.title AS dataset_name,
+                ds.title AS dataset_title,
                 ds.description,
-                ds.version,
-                ds.source_url,
+                ds.citation,
+                ds.doi,
+                ds.language,
+                ds.data_language,
                 ds.license,
                 ds.publication_date,
                 ds.metadata_modified_date AS last_updated,
@@ -24,6 +27,7 @@ def get_metadata(dataset_name: str, category_name: str):
                 ds.is_active,
                 ds.keywords,
                 ds.dataset_type,
+
                 c.name AS contact_name,
                 c.role AS contact_role,
                 c.email AS contact_email,
@@ -32,20 +36,25 @@ def get_metadata(dataset_name: str, category_name: str):
                 c.city AS contact_city,
                 c.state AS contact_state,
                 c.country AS contact_country,
+
                 p.publisher_name,
                 p.country AS publisher_country,
                 p.record_count,
+
                 s.temporal_start_date,
                 s.temporal_end_date,
                 s.geographic_scope,
                 s.taxonomic_scope,
                 s.taxonomic_authority,
+
                 m.field_name,
                 m.ontology_mapping,
                 m.data_type,
+
                 st.stat_name,
                 st.stat_value,
                 st.measurement_date
+                
             FROM
                 category_master cat
             JOIN
@@ -60,23 +69,27 @@ def get_metadata(dataset_name: str, category_name: str):
                 dataset_mapping m ON m.dataset_id = ds.dataset_id
             LEFT JOIN
                 dataset_statistics st ON st.dataset_id = ds.dataset_id
+
             WHERE
                 cat.category_name = %s AND ds.title = %s
+
             ORDER BY
                 cat.category_name, ds.title, m.field_name;
-        """, (category_name, dataset_name))
+        """, (category_name, title))
 
         rows = cursor.fetchall()
         if not rows:
             raise HTTPException(status_code=404, detail="Metadata not found for the specified dataset and category")
 
-        # Convert to nested structure
+        # Process rows into structured output
         dataset_details = {
             "category_name": category_name,
-            "dataset_name": dataset_name,
+            "dataset_title": title,
             "description": rows[0]['description'],
-            "version": rows[0]['version'],
-            "source_url": rows[0]['source_url'],
+            "citation": rows[0]['citation'],
+            "doi": rows[0]['doi'],
+            "language": rows[0]['language'],
+            "data_language": rows[0]['data_language'],
             "license": rows[0]['license'],
             "publication_date": rows[0]['publication_date'],
             "last_updated": rows[0]['last_updated'],
@@ -90,9 +103,8 @@ def get_metadata(dataset_name: str, category_name: str):
             "fields": [],
             "statistics": []
         }
-        
+
         for row in rows:
-            # Add contacts
             contact = {
                 "name": row['contact_name'],
                 "role": row['contact_role'],
@@ -105,8 +117,7 @@ def get_metadata(dataset_name: str, category_name: str):
             }
             if contact and contact not in dataset_details["contacts"]:
                 dataset_details["contacts"].append(contact)
-            
-            # Add publishers
+
             publisher = {
                 "publisher_name": row['publisher_name'],
                 "country": row['publisher_country'],
@@ -114,8 +125,7 @@ def get_metadata(dataset_name: str, category_name: str):
             }
             if publisher and publisher not in dataset_details["publishers"]:
                 dataset_details["publishers"].append(publisher)
-            
-            # Add scope
+
             scope = {
                 "temporal_start_date": row['temporal_start_date'],
                 "temporal_end_date": row['temporal_end_date'],
@@ -125,8 +135,7 @@ def get_metadata(dataset_name: str, category_name: str):
             }
             if scope not in dataset_details["scopes"]:
                 dataset_details["scopes"].append(scope)
-            
-            # Add fields
+
             field = {
                 "field_name": row['field_name'],
                 "ontology_mapping": row['ontology_mapping'],
@@ -134,8 +143,7 @@ def get_metadata(dataset_name: str, category_name: str):
             }
             if field not in dataset_details["fields"]:
                 dataset_details["fields"].append(field)
-            
-            # Add statistics
+
             stat = {
                 "stat_name": row['stat_name'],
                 "stat_value": row['stat_value'],

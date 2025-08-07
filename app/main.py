@@ -7,6 +7,7 @@ import asyncio
 from app.db import get_connection
 from app.endpoints import fields
 from app.endpoints import metadata 
+from app.endpoints import categories_router
 from app.endpoints import submit_mapping
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -25,6 +26,7 @@ app.add_middleware(
 app.include_router(metadata.router)
 app.include_router(fields.router)
 app.include_router(submit_mapping.router)
+app.include_router(categories_router)
 
 # Participant API endpoints
 PARTICIPANTS = {
