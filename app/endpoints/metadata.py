@@ -1,70 +1,149 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from app.db import get_connection
+from psycopg2.extras import RealDictCursor
 
 router = APIRouter()
 
 @router.get("/metadata")
-def get_metadata():
+def get_metadata(dataset_name: str, category_name: str):
     conn = get_connection()
-    cursor = conn.cursor()
+    try:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        
+        cursor.execute("""
+            SELECT
+                cat.category_name,
+                ds.title AS dataset_name,
+                ds.description,
+                ds.version,
+                ds.source_url,
+                ds.license,
+                ds.publication_date,
+                ds.metadata_modified_date AS last_updated,
+                ds.registration_date,
+                ds.is_active,
+                ds.keywords,
+                ds.dataset_type,
+                c.name AS contact_name,
+                c.role AS contact_role,
+                c.email AS contact_email,
+                c.organization AS contact_organization,
+                c.address AS contact_address,
+                c.city AS contact_city,
+                c.state AS contact_state,
+                c.country AS contact_country,
+                p.publisher_name,
+                p.country AS publisher_country,
+                p.record_count,
+                s.temporal_start_date,
+                s.temporal_end_date,
+                s.geographic_scope,
+                s.taxonomic_scope,
+                s.taxonomic_authority,
+                m.field_name,
+                m.ontology_mapping,
+                m.data_type,
+                st.stat_name,
+                st.stat_value,
+                st.measurement_date
+            FROM
+                category_master cat
+            JOIN
+                dataset_master ds ON ds.category_id = cat.category_id
+            LEFT JOIN
+                dataset_contacts c ON c.dataset_id = ds.dataset_id
+            LEFT JOIN
+                dataset_publisher p ON p.dataset_id = ds.dataset_id
+            LEFT JOIN
+                dataset_scope s ON s.dataset_id = ds.dataset_id
+            LEFT JOIN
+                dataset_mapping m ON m.dataset_id = ds.dataset_id
+            LEFT JOIN
+                dataset_statistics st ON st.dataset_id = ds.dataset_id
+            WHERE
+                cat.category_name = %s AND ds.title = %s
+            ORDER BY
+                cat.category_name, ds.title, m.field_name;
+        """, (category_name, dataset_name))
 
-    cursor.execute("""
-        SELECT
-            cat.category_name AS category_name,
-            ds.dataset_name AS dataset_name,
-            ffm.federated_field_name,
-            ffm.description,
-            dffm.column_name
-        FROM
-            category_master cat
-        JOIN
-            dataset_master ds ON ds.category_id = cat.category_id
-        JOIN
-            federated_field_mapping dffm ON dffm.dataset_id = ds.dataset_id
-        JOIN
-            federated_field_master ffm ON ffm.id = dffm.federated_field_id
-        ORDER BY
-            cat.category_name, ds.dataset_name, ffm.federated_field_name;
-    """)
+        rows = cursor.fetchall()
+        if not rows:
+            raise HTTPException(status_code=404, detail="Metadata not found for the specified dataset and category")
 
-    rows = cursor.fetchall()
-    conn.close()
-
-    # Convert to nested structure
-    output = {}
-    for row in rows:
-        category_name, dataset_name, field_name, description, column_name = row
-
-        # Add category
-        if category_name not in output:
-            output[category_name] = {
-                "category": category_name,
-                "datasets": []
+        # Convert to nested structure
+        dataset_details = {
+            "category_name": category_name,
+            "dataset_name": dataset_name,
+            "description": rows[0]['description'],
+            "version": rows[0]['version'],
+            "source_url": rows[0]['source_url'],
+            "license": rows[0]['license'],
+            "publication_date": rows[0]['publication_date'],
+            "last_updated": rows[0]['last_updated'],
+            "registration_date": rows[0]['registration_date'],
+            "is_active": rows[0]['is_active'],
+            "keywords": rows[0]['keywords'],
+            "dataset_type": rows[0]['dataset_type'],
+            "contacts": [],
+            "publishers": [],
+            "scopes": [],
+            "fields": [],
+            "statistics": []
+        }
+        
+        for row in rows:
+            # Add contacts
+            contact = {
+                "name": row['contact_name'],
+                "role": row['contact_role'],
+                "email": row['contact_email'],
+                "organization": row['contact_organization'],
+                "address": row['contact_address'],
+                "city": row['contact_city'],
+                "state": row['contact_state'],
+                "country": row['contact_country']
             }
-
-        # Add dataset
-        datasets = output[category_name]["datasets"]
-        dataset = next((d for d in datasets if d["name"] == dataset_name), None)
-        if not dataset:
-            dataset = {
-                "name": dataset_name,
-                "fields": []
+            if contact and contact not in dataset_details["contacts"]:
+                dataset_details["contacts"].append(contact)
+            
+            # Add publishers
+            publisher = {
+                "publisher_name": row['publisher_name'],
+                "country": row['publisher_country'],
+                "record_count": row['record_count']
             }
-            datasets.append(dataset)
-
-        # Add field
-        fields = dataset["fields"]
-        field = next((f for f in fields if f["field_name"] == field_name), None)
-        if not field:
+            if publisher and publisher not in dataset_details["publishers"]:
+                dataset_details["publishers"].append(publisher)
+            
+            # Add scope
+            scope = {
+                "temporal_start_date": row['temporal_start_date'],
+                "temporal_end_date": row['temporal_end_date'],
+                "geographic_scope": row['geographic_scope'],
+                "taxonomic_scope": row['taxonomic_scope'],
+                "taxonomic_authority": row['taxonomic_authority']
+            }
+            if scope not in dataset_details["scopes"]:
+                dataset_details["scopes"].append(scope)
+            
+            # Add fields
             field = {
-                "field_name": field_name,
-                "description": description,
-                "mappings": []
+                "field_name": row['field_name'],
+                "ontology_mapping": row['ontology_mapping'],
+                "data_type": row['data_type']
             }
-            fields.append(field)
+            if field not in dataset_details["fields"]:
+                dataset_details["fields"].append(field)
+            
+            # Add statistics
+            stat = {
+                "stat_name": row['stat_name'],
+                "stat_value": row['stat_value'],
+                "measurement_date": row['measurement_date']
+            }
+            if stat not in dataset_details["statistics"]:
+                dataset_details["statistics"].append(stat)
 
-        # Add mapping
-        if column_name and column_name not in field["mappings"]:
-            field["mappings"].append(column_name)
-
-    return list(output.values())
+        return dataset_details
+    finally:
+        conn.close()
