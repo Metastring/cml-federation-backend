@@ -6,13 +6,12 @@ import asyncio
 # Include other internal modules
 from app.db import get_connection
 from app.endpoints import fields
-from app.endpoints import metadata 
+from app.endpoints import metadata
 from app.endpoints import categories_router
 from app.endpoints import submit_mapping
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
-
 
 app.add_middleware(
     CORSMiddleware,
@@ -34,10 +33,11 @@ PARTICIPANTS = {
     "cpmp": "http://139.59.84.243:8050/search"
 }
 
-# Request payload model
+# Updated request payload model
 class FederatedSearchRequest(BaseModel):
     category: list[str]
     dataset: list[str]
+    fields: list[str]
     search_text: str
 
 async def fetch_from_participant(client, participant_name: str, url: str, field: str, query: str):
@@ -46,12 +46,14 @@ async def fetch_from_participant(client, participant_name: str, url: str, field:
         response.raise_for_status()
         return {
             "participant_name": participant_name,
+            "field": field,
             "api_url": url,
             "results": response.json().get("results", [])
         }
     except Exception as e:
         return {
             "participant_name": participant_name,
+            "field": field,
             "api_url": url,
             "results": [],
             "error": str(e)
@@ -59,33 +61,42 @@ async def fetch_from_participant(client, participant_name: str, url: str, field:
 
 @app.post("/federated-search")
 async def federated_search(payload: FederatedSearchRequest = Body(...)):
+    # Check category
     if "biodiversity" not in [c.lower() for c in payload.category]:
         raise HTTPException(status_code=400, detail="At least one category must be 'biodiversity'.")
 
-    # Validate requested datasets
+    # Validate datasets
     invalid = [ds for ds in payload.dataset if ds not in PARTICIPANTS]
     if invalid:
         raise HTTPException(status_code=400, detail=f"Unknown datasets: {', '.join(invalid)}")
 
     async with httpx.AsyncClient(timeout=10.0) as client:
+        # Create one task per dataset-field combination
         tasks = [
-            fetch_from_participant(client, participant, PARTICIPANTS[participant], "vernacular_name_common_names", payload.search_text)
+            fetch_from_participant(client, participant, PARTICIPANTS[participant], field, payload.search_text)
             for participant in payload.dataset
+            for field in payload.fields
         ]
         responses = await asyncio.gather(*tasks)
 
-    results = {
-        item["participant_name"]: {
-            "api_url": item["api_url"],
+    # Group results by participant
+    results = {}
+    for item in responses:
+        pname = item["participant_name"]
+        if pname not in results:
+            results[pname] = {
+                "api_url": item["api_url"],
+                "field_results": {}
+            }
+        results[pname]["field_results"][item["field"]] = {
             "results": item["results"],
             "error": item.get("error")
         }
-        for item in responses
-    }
 
     return {
         "category": payload.category,
         "dataset": payload.dataset,
+        "fields": payload.fields,
         "search_text": payload.search_text,
         "results": results
     }
