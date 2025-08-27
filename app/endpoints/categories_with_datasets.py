@@ -13,7 +13,7 @@ def get_categories_with_datasets():
             SELECT 
                 cat.category_name, 
                 ds.dataset_id, 
-                ds.title AS dataset_title,
+                ds.description AS dataset_title,
                 dm.field_name, 
                 dm.ontology_mapping, 
                 dm.data_type
@@ -24,7 +24,7 @@ def get_categories_with_datasets():
             LEFT JOIN
                 dataset_mapping dm ON dm.dataset_id = ds.dataset_id
             ORDER BY 
-                cat.category_name, ds.title, dm.field_name;
+                cat.category_name, ds.description, dm.field_name;
         """)
         
         rows = cursor.fetchall()
