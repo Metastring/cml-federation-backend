@@ -4,13 +4,21 @@ from psycopg2.extras import RealDictCursor
 
 router = APIRouter()
 
+# Mapping of titles to short aliases
+TITLE_ALIASES = {
+    "Citizens’ Portal of Medicinal Plants": "cpmp",
+    "Kew Plant Database": "kew"
+}
+
 @router.get("/metadata")
 def get_metadata(title: str, category_name: str):
+    # Normalize title
+    normalized_title = TITLE_ALIASES.get(title, title)
+
     conn = get_connection()
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # SQL query to gather all relevant details from various tables
         cursor.execute("""
             SELECT
                 cat.category_name,
@@ -75,16 +83,15 @@ def get_metadata(title: str, category_name: str):
 
             ORDER BY
                 cat.category_name, ds.title, m.field_name;
-        """, (category_name, title))
+        """, (category_name, normalized_title))
 
         rows = cursor.fetchall()
         if not rows:
             raise HTTPException(status_code=404, detail="Metadata not found for the specified dataset and category")
 
-        # Process rows into structured output
         dataset_details = {
             "category_name": category_name,
-            "dataset_title": title,
+            "dataset_title": normalized_title,  # return alias instead of original
             "description": rows[0]['description'],
             "citation": rows[0]['citation'],
             "doi": rows[0]['doi'],
