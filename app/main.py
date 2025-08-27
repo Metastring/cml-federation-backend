@@ -30,8 +30,8 @@ app.include_router(dataset_details.router)
 
 # Participant API endpoints
 PARTICIPANTS = {
-    "kew": "http://134.209.145.106:8000/search",
-    "cpmp": "http://139.59.84.243:8050/search"
+    "Kew Plant Database": "http://134.209.145.106:8000/search",
+    "Citizens’ Portal of Medicinal Plants": "http://139.59.84.243:8050/search"
 }
 
 # Updated request payload model
