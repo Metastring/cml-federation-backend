@@ -4,17 +4,13 @@ from psycopg2.extras import RealDictCursor
 
 router = APIRouter()
 
-# Mapping of titles to short aliases
-TITLE_ALIASES = {
-    "Citizens’ Portal of Medicinal Plants": "cpmp",
-    "Kew Plant Database": "kew"
-}
+
 
 @router.get("/metadata")
 def get_metadata(title: str, category_name: str):
     # Normalize title
-    normalized_title = TITLE_ALIASES.get(title, title)
-
+    normalized_title = title
+    
     conn = get_connection()
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
