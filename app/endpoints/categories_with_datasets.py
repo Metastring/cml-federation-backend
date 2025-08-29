@@ -90,7 +90,6 @@ def get_categories():
     
 #     finally:
 #         conn.close()
-
 @router.get("/categories-with-datasets")
 def get_categories_with_datasets():
     conn = get_connection()
@@ -101,6 +100,7 @@ def get_categories_with_datasets():
                 cat.category_name, 
                 ds.dataset_id, 
                 ds.title AS dataset_title,
+                ds.description,
                 ds.keywords,
                 ds.publication_date,
                 ds.doi,
@@ -109,7 +109,8 @@ def get_categories_with_datasets():
                 ds.registration_date,
                 c.name AS contact_name,
                 dm.field_name, 
-                dm.ontology_mapping, 
+                dm.ontology_mapping,
+                dm.ontology_mapping_to_display,
                 dm.data_type
             FROM 
                 category_master cat
@@ -131,8 +132,8 @@ def get_categories_with_datasets():
             dataset_title = row["dataset_title"]  # May be None
             dataset_id = row["dataset_id"]
 
-            # hover fields
-            hover_fields = {
+            # metadata (renamed from hover_fields)
+            metadata = {
                 "keywords": row.get("keywords"),
                 "DOI": row.get("doi"),
                 "contacts": row.get("contact_name"),
@@ -145,6 +146,7 @@ def get_categories_with_datasets():
             field_info = {
                 "field_name": row["field_name"],
                 "ontology_mapping": row["ontology_mapping"],
+                "ontology_mapping_to_display": row["ontology_mapping_to_display"],
                 "data_type": row["data_type"]
             }
             
@@ -154,7 +156,8 @@ def get_categories_with_datasets():
             if dataset_title:
                 if dataset_title not in category_map[category]:
                     category_map[category][dataset_title] = {
-                        "hover_fields": hover_fields,
+                        "description": row.get("description"),
+                        "metadata": metadata,   # updated here
                         "fields": []
                     }
                 
@@ -169,7 +172,8 @@ def get_categories_with_datasets():
                 "datasets": [
                     {
                         "dataset_title": dataset_title,
-                        "hover_fields": datasets_info["hover_fields"],
+                        "description": datasets_info["description"],
+                        "metadata": datasets_info["metadata"],   # updated here
                         "fields": datasets_info["fields"]
                     }
                     for dataset_title, datasets_info in category_map[category].items()
