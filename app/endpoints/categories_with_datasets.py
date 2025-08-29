@@ -4,6 +4,24 @@ from psycopg2.extras import RealDictCursor
 
 router = APIRouter()
 
+
+@router.get("/categories")
+def get_categories():
+    conn = get_connection()
+    try:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("""
+            SELECT category_id, category_name
+            FROM category_master
+            ORDER BY category_name;
+        """)
+        categories = cursor.fetchall()
+        return categories
+    finally:
+        conn.close()
+
+
+
 @router.get("/categories-with-datasets")
 def get_categories_with_datasets():
     conn = get_connection()
