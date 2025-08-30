@@ -60,22 +60,66 @@ async def fetch_from_participant(client, participant_name: str, url: str, field:
             "error": str(e)
         }
 
+# @app.post("/federated-search")
+# async def federated_search(payload: FederatedSearchRequest = Body(...)):
+#     # Check category
+#     if "biodiversity" not in [c.lower() for c in payload.category]:
+#         raise HTTPException(status_code=400, detail="At least one category must be 'biodiversity'.")
+
+#     # Validate datasets
+#     invalid = [ds for ds in payload.dataset if ds not in PARTICIPANTS]
+#     if invalid:
+#         raise HTTPException(status_code=400, detail=f"Unknown datasets: {', '.join(invalid)}")
+
+#     async with httpx.AsyncClient(timeout=10.0) as client:
+#         # Create one task per dataset-field combination
+#         tasks = [
+#             fetch_from_participant(client, participant, PARTICIPANTS[participant], field, payload.search_text)
+#             for participant in payload.dataset
+#             for field in payload.fields
+#         ]
+#         responses = await asyncio.gather(*tasks)
+
+#     # Group results by participant
+#     results = {}
+#     for item in responses:
+#         pname = item["participant_name"]
+#         if pname not in results:
+#             results[pname] = {
+#                 "api_url": item["api_url"],
+#                 "field_results": {}
+#             }
+#         results[pname]["field_results"][item["field"]] = {
+#             "results": item["results"],
+#             "error": item.get("error")
+#         }
+
+#     return {
+#         "category": payload.category,
+#         "dataset": payload.dataset,
+#         "fields": payload.fields,
+#         "search_text": payload.search_text,
+#         "results": results
+#     }
+
+
 @app.post("/federated-search")
 async def federated_search(payload: FederatedSearchRequest = Body(...)):
     # Check category
     if "biodiversity" not in [c.lower() for c in payload.category]:
         raise HTTPException(status_code=400, detail="At least one category must be 'biodiversity'.")
 
-    # Validate datasets
-    invalid = [ds for ds in payload.dataset if ds not in PARTICIPANTS]
-    if invalid:
-        raise HTTPException(status_code=400, detail=f"Unknown datasets: {', '.join(invalid)}")
+    # Filter only known participants
+    valid_datasets = [ds for ds in payload.dataset if ds in PARTICIPANTS]
+    invalid_datasets = [ds for ds in payload.dataset if ds not in PARTICIPANTS]
+
+    if not valid_datasets:
+        raise HTTPException(status_code=400, detail="No valid datasets provided.")
 
     async with httpx.AsyncClient(timeout=10.0) as client:
-        # Create one task per dataset-field combination
         tasks = [
             fetch_from_participant(client, participant, PARTICIPANTS[participant], field, payload.search_text)
-            for participant in payload.dataset
+            for participant in valid_datasets
             for field in payload.fields
         ]
         responses = await asyncio.gather(*tasks)
@@ -97,10 +141,13 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
     return {
         "category": payload.category,
         "dataset": payload.dataset,
+        "valid_datasets": valid_datasets,
+        "invalid_datasets": invalid_datasets,   # <--- include info for debugging
         "fields": payload.fields,
         "search_text": payload.search_text,
         "results": results
     }
+
 
 @app.get("/ping")
 def ping():
