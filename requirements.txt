@@ -1,4 +1,0 @@
-fastapi
-uvicorn
-psycopg2
-httpx==0.28.1
