@@ -1,0 +1,18 @@
+fastapi
+uvicorn
+starlette
+strawberry-graphql[fastapi]==0.217.0
+sqlalchemy
+psycopg2-binary
+shapely
+requests
+pydantic[email]
+python-dotenv
+boto3
+jinja2
+httpx
+aiofiles
+# Test dependencies
+pytest
+pytest-mock
+python-dotenv
