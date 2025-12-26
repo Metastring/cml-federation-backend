@@ -1,3 +1,19 @@
+
+from fastapi import FastAPI, HTTPException, Body
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+import httpx
+import asyncio
+
+# Include other internal modules
+from app.db import get_connection
+from app.endpoints import metadata
+from app.endpoints import categories_router
+from fastapi.middleware.cors import CORSMiddleware
+from app.endpoints import dataset_master
+from app.endpoints import dataset_details
+from app.endpoints.ontology import router as ontology_router
+
 from fastapi import FastAPI, HTTPException, Body
 from pydantic import BaseModel
 import httpx
@@ -11,6 +27,8 @@ from app.endpoints import categories_router
 from fastapi.middleware.cors import CORSMiddleware
 from app.endpoints import dataset_master
 from app.endpoints import dataset_details
+
+
 
 app = FastAPI()
 
@@ -27,6 +45,25 @@ app.include_router(metadata.router)
 app.include_router(categories_router)
 app.include_router(dataset_master.router)
 app.include_router(dataset_details.router)
+app.include_router(ontology_router)
+
+# API to get all unique ontology_mapping values from dataset_mapping
+@app.get("/ontology-list")
+async def get_ontology_list():
+    """
+    Returns all unique ontology_mapping values from the dataset_mapping table.
+    """
+    try:
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT ontology_mapping FROM dataset_mapping WHERE ontology_mapping IS NOT NULL")
+        rows = cursor.fetchall()
+        unique_ontologies = sorted({row[0] for row in rows if row[0]})
+        cursor.close()
+        conn.close()
+        return JSONResponse(content={"ontology_list": unique_ontologies})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Participant API endpoints
 PARTICIPANTS = {
