@@ -2,3 +2,12 @@ fastapi
 uvicorn
 psycopg2
 httpx==0.28.1
+python-dotenv
+sqlalchemy==2.0.23
+alembic==1.13.1
+pytest==7.4.4
+pytest-mock==3.12.0
+pytest-asyncio==0.21.1
+boto3==1.28.85
+pydantic-settings==2.0.3
+python-multipart
