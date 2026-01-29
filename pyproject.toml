@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "central-server"
+version = "0.1.0"
+description = "Central Server for Biodiversity Data Registry"
+requires-python = ">=3.11"
+authors = [
+    {name = "Metastring", email = "contact@metastring.com"}
+]
+dependencies = [
+    "fastapi==0.117.1",
+    "uvicorn==0.37.0",
+    "pydantic==2.11.9",
+    "psycopg2==2.9.10",
+    "httpx==0.28.1",
+    "python-dotenv==1.1.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-mock>=3.10",
+    "pytest-asyncio>=0.21",
+    "black>=23.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0",
+    "testcontainers>=3.7.0",
+]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q --strict-markers"
+testpaths = ["tests"]
+
+markers =
+    unit: fast tests, no external dependencies
+    integration: requires database
+
+[tool.coverage.run]
+branch = true
+source = ["app"]
+
+[tool.coverage.report]
+fail_under = 80
