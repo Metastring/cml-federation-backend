@@ -1,0 +1,97 @@
+nohup: ignoring input
+INFO:     Started server process [1541782]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     49.207.49.238:3932 - "GET /docs HTTP/1.1" 200 OK
+INFO:     49.207.49.238:3932 - "GET /openapi.json HTTP/1.1" 200 OK
+INFO:     49.207.49.238:3554 - "GET /ping HTTP/1.1" 200 OK
+INFO:     49.207.49.238:5002 - "OPTIONS /federated-search HTTP/1.1" 200 OK
+Federated search rejected: no valid datasets
+INFO:     49.207.49.238:5002 - "POST /federated-search HTTP/1.1" 400 Bad Request
+Federated search rejected: no valid datasets
+INFO:     49.207.49.238:5002 - "POST /federated-search HTTP/1.1" 400 Bad Request
+Federated search rejected: no valid datasets
+INFO:     49.207.49.238:5002 - "POST /federated-search HTTP/1.1" 400 Bad Request
+Federated search rejected: no valid datasets
+INFO:     49.207.49.238:5002 - "POST /federated-search HTTP/1.1" 400 Bad Request
+Federated search rejected: no valid datasets
+INFO:     49.207.49.238:5043 - "POST /federated-search HTTP/1.1" 400 Bad Request
+INFO:     49.207.49.238:5350 - "POST /federated-search HTTP/1.1" 200 OK
+Federated search rejected: no valid datasets
+INFO:     49.207.49.238:4482 - "POST /federated-search HTTP/1.1" 400 Bad Request
+INFO:     49.207.49.238:4803 - "POST /federated-search HTTP/1.1" 200 OK
+Database connection failed
+Domain exception: DATABASE_ERROR - Database connect failed: Failed to connect to database
+INFO:     49.207.49.238:5196 - "GET /categories-with-datasets HTTP/1.1" 500 Internal Server Error
+ERROR:    Exception in ASGI application
+Traceback (most recent call last):
+  File "/home/metastring/src/cml/app/core/database.py", line 48, in get_connection
+    connection = psycopg2.connect(**db_config)
+  File "/home/metastring/.local/lib/python3.10/site-packages/psycopg2/__init__.py", line 122, in connect
+    conn = _connect(dsn, connection_factory=connection_factory, **kwasync)
+psycopg2.OperationalError: connection to server at "localhost" (::1), port 5432 failed: fe_sendauth: no password supplied
+
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/metastring/.local/lib/python3.10/site-packages/uvicorn/protocols/http/h11_impl.py", line 403, in run_asgi
+    result = await app(  # type: ignore[func-returns-value]
+  File "/home/metastring/.local/lib/python3.10/site-packages/uvicorn/middleware/proxy_headers.py", line 60, in __call__
+    return await self.app(scope, receive, send)
+  File "/home/metastring/.local/lib/python3.10/site-packages/fastapi/applications.py", line 1135, in __call__
+    await super().__call__(scope, receive, send)
+  File "/home/metastring/.local/lib/python3.10/site-packages/starlette/applications.py", line 107, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/home/metastring/.local/lib/python3.10/site-packages/starlette/middleware/errors.py", line 186, in __call__
+    raise exc
+  File "/home/metastring/.local/lib/python3.10/site-packages/starlette/middleware/errors.py", line 164, in __call__
+    await self.app(scope, receive, _send)
+  File "/home/metastring/.local/lib/python3.10/site-packages/starlette/middleware/cors.py", line 93, in __call__
+    await self.simple_response(scope, receive, send, request_headers=headers)
+  File "/home/metastring/.local/lib/python3.10/site-packages/starlette/middleware/cors.py", line 144, in simple_response
+    await self.app(scope, receive, send)
+  File "/home/metastring/.local/lib/python3.10/site-packages/starlette/middleware/exceptions.py", line 63, in __call__
+    await wrap_app_handling_exceptions(self.app, conn)(scope, receive, send)
+  File "/home/metastring/.local/lib/python3.10/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/home/metastring/.local/lib/python3.10/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/home/metastring/.local/lib/python3.10/site-packages/fastapi/middleware/asyncexitstack.py", line 18, in __call__
+    await self.app(scope, receive, send)
+  File "/home/metastring/.local/lib/python3.10/site-packages/starlette/routing.py", line 716, in __call__
+    await self.middleware_stack(scope, receive, send)
+  File "/home/metastring/.local/lib/python3.10/site-packages/starlette/routing.py", line 736, in app
+    await route.handle(scope, receive, send)
+  File "/home/metastring/.local/lib/python3.10/site-packages/starlette/routing.py", line 290, in handle
+    await self.app(scope, receive, send)
+  File "/home/metastring/.local/lib/python3.10/site-packages/fastapi/routing.py", line 115, in app
+    await wrap_app_handling_exceptions(app, request)(scope, receive, send)
+  File "/home/metastring/.local/lib/python3.10/site-packages/starlette/_exception_handler.py", line 53, in wrapped_app
+    raise exc
+  File "/home/metastring/.local/lib/python3.10/site-packages/starlette/_exception_handler.py", line 42, in wrapped_app
+    await app(scope, receive, sender)
+  File "/home/metastring/.local/lib/python3.10/site-packages/fastapi/routing.py", line 101, in app
+    response = await f(request)
+  File "/home/metastring/.local/lib/python3.10/site-packages/fastapi/routing.py", line 355, in app
+    raw_response = await run_endpoint_function(
+  File "/home/metastring/.local/lib/python3.10/site-packages/fastapi/routing.py", line 245, in run_endpoint_function
+    return await run_in_threadpool(dependant.call, **values)
+  File "/home/metastring/.local/lib/python3.10/site-packages/starlette/concurrency.py", line 32, in run_in_threadpool
+    return await anyio.to_thread.run_sync(func)
+  File "/home/metastring/.local/lib/python3.10/site-packages/anyio/to_thread.py", line 63, in run_sync
+    return await get_async_backend().run_sync_in_worker_thread(
+  File "/home/metastring/.local/lib/python3.10/site-packages/anyio/_backends/_asyncio.py", line 2502, in run_sync_in_worker_thread
+    return await future
+  File "/home/metastring/.local/lib/python3.10/site-packages/anyio/_backends/_asyncio.py", line 986, in run
+    result = context.run(func, *args)
+  File "/home/metastring/src/cml/app/api/categories_controller.py", line 69, in get_categories_with_datasets
+    conn = get_connection()
+  File "/home/metastring/src/cml/app/core/database.py", line 97, in get_connection
+    return _db_instance.get_connection()
+  File "/home/metastring/src/cml/app/core/database.py", line 60, in get_connection
+    raise DatabaseError("Failed to connect to database", "connect") from e
+app.core.exceptions.DatabaseError: Database connect failed: Failed to connect to database
+INFO:     127.0.0.1:58476 - "GET / HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:58476 - "GET /favicon.ico HTTP/1.1" 404 Not Found
