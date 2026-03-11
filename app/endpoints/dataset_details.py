@@ -1,8 +1,9 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import List, Optional
 from app.db import get_connection
 from datetime import date
+import json
 
 router = APIRouter()
 
@@ -174,11 +175,10 @@ def save_dataset_details(details: DatasetDetailsInput):
         return {"status": "error", "error": str(e)}
 
 
-@router.post("/dataset-registry")
-def create_dataset_registry(payload: DatasetRegistryInput):
-    """Insert category (if needed), dataset_master and related records in a single transaction."""
+def _create_dataset_registry_from_payload(payload: DatasetRegistryInput):
+    """Core implementation for inserting dataset registry records from a parsed payload."""
+    conn = get_connection()
     try:
-        conn = get_connection()
         cur = conn.cursor()
 
         # Handle category: prefer existing by id, then by name; insert only if name not found
@@ -210,7 +210,7 @@ def create_dataset_registry(payload: DatasetRegistryInput):
         # Insert dataset_master with system dates
         from datetime import datetime
         system_date = datetime.now().date()
-        
+
         cur.execute("""
             INSERT INTO dataset_master (
                 title, description, citation, doi, language,
@@ -278,9 +278,6 @@ def create_dataset_registry(payload: DatasetRegistryInput):
                     """, (dataset_id, st.stat_name, st.stat_value, st.measurement_date))
 
         conn.commit()
-        cur.close()
-        conn.close()
-
         return {"status": "success", "dataset_id": dataset_id, "category_id": category_id}
 
     except Exception as e:
@@ -289,6 +286,60 @@ def create_dataset_registry(payload: DatasetRegistryInput):
         except Exception:
             pass
         return {"status": "error", "error": str(e)}
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@router.post("/dataset-registry")
+async def create_dataset_registry(
+    payload: DatasetRegistryInput | None = None,
+    file: UploadFile | None = File(None),
+    dataset_description: str | None = Form(None),
+):
+    """Insert category (if needed), dataset_master and related records.
+
+    Supports two modes:
+    1) JSON body (DatasetRegistryInput) as before.
+    2) Multipart/form-data with a JSON file (extension .json) and an optional
+       dataset_description field which overrides/sets the description.
+    """
+
+    # File-upload mode: parse JSON from the uploaded file
+    if file is not None and file.filename:
+        filename = file.filename.lower()
+        if not filename.endswith(".json"):
+            return {"status": "error", "error": "Only .json files are supported for dataset-registry uploads"}
+
+        try:
+            content = await file.read()
+            data = json.loads(content.decode("utf-8"))
+        except Exception as e:
+            return {"status": "error", "error": f"Failed to parse JSON file: {e}"}
+
+        if not isinstance(data, dict):
+            return {"status": "error", "error": "Top-level JSON must be an object"}
+
+        if dataset_description is not None:
+            data["description"] = dataset_description
+
+        try:
+            payload_obj = DatasetRegistryInput(**data)
+        except Exception as e:
+            return {"status": "error", "error": f"Invalid dataset registry JSON structure: {e}"}
+
+        return _create_dataset_registry_from_payload(payload_obj)
+
+    # JSON body mode (existing behaviour)
+    if payload is None:
+        return {"status": "error", "error": "Either JSON body or .json file upload is required"}
+
+    if dataset_description is not None:
+        payload.description = dataset_description
+
+    return _create_dataset_registry_from_payload(payload)
 
 
 @router.post("/dataset-mapping-update")

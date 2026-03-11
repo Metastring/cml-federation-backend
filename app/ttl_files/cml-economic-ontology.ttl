@@ -1,0 +1,161 @@
+@prefix eco:  <http://example.org/economic#> .
+@prefix geo:  <http://example.org/geo#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+
+#################################################################
+# ONTOLOGY DECLARATION
+#################################################################
+
+eco:EconomicOntology
+    a owl:Ontology ;
+    rdfs:label "Economic Core Ontology" ;
+    rdfs:comment "Standard economic ontology for Household, Enterprise, Infrastructure and SECC/PMGSY/Economic Census integration." .
+
+#################################################################
+# CORE CLASSES
+#################################################################
+
+eco:EconomicEntity
+    a owl:Class ;
+    rdfs:label "Economic Entity" .
+
+eco:Household
+    a owl:Class ;
+    rdfs:subClassOf eco:EconomicEntity ;
+    rdfs:label "Household" .
+
+eco:Enterprise
+    a owl:Class ;
+    rdfs:subClassOf eco:EconomicEntity ;
+    rdfs:label "Enterprise" .
+
+eco:Infrastructure
+    a owl:Class ;
+    rdfs:subClassOf eco:EconomicEntity ;
+    rdfs:label "Infrastructure" .
+
+eco:Road
+    a owl:Class ;
+    rdfs:subClassOf eco:Infrastructure ;
+    rdfs:label "Road" .
+
+eco:GovernmentScheme
+    a owl:Class ;
+    rdfs:label "Government Scheme" .
+
+eco:SocioEconomicIndicator
+    a owl:Class ;
+    rdfs:label "Socio-Economic Indicator" .
+
+#################################################################
+# GEOGRAPHY CLASSES
+#################################################################
+
+geo:AdministrativeUnit
+    a owl:Class ;
+    rdfs:label "Administrative Unit" .
+
+geo:State
+    a owl:Class ;
+    rdfs:subClassOf geo:AdministrativeUnit ;
+    rdfs:label "State" .
+
+geo:District
+    a owl:Class ;
+    rdfs:subClassOf geo:AdministrativeUnit ;
+    rdfs:label "District" .
+
+geo:Village
+    a owl:Class ;
+    rdfs:subClassOf geo:AdministrativeUnit ;
+    rdfs:label "Village" .
+
+#################################################################
+# OBJECT PROPERTIES
+#################################################################
+
+eco:locatedIn
+    a owl:ObjectProperty ;
+    rdfs:domain eco:EconomicEntity ;
+    rdfs:range geo:AdministrativeUnit ;
+    rdfs:label "located in" .
+
+eco:implementedUnder
+    a owl:ObjectProperty ;
+    rdfs:domain eco:Infrastructure ;
+    rdfs:range eco:GovernmentScheme ;
+    rdfs:label "implemented under" .
+
+eco:hasIndicator
+    a owl:ObjectProperty ;
+    rdfs:domain eco:Household ;
+    rdfs:range eco:SocioEconomicIndicator ;
+    rdfs:label "has socio-economic indicator" .
+
+eco:employsHousehold
+    a owl:ObjectProperty ;
+    rdfs:domain eco:Enterprise ;
+    rdfs:range eco:Household ;
+    rdfs:label "employs household" .
+
+#################################################################
+# DATA PROPERTIES
+#################################################################
+
+eco:householdID
+    a owl:DatatypeProperty ;
+    rdfs:domain eco:Household ;
+    rdfs:range xsd:string ;
+    rdfs:label "Household ID" .
+
+eco:enterpriseID
+    a owl:DatatypeProperty ;
+    rdfs:domain eco:Enterprise ;
+    rdfs:range xsd:string ;
+    rdfs:label "Enterprise ID" .
+
+eco:numberOfEmployees
+    a owl:DatatypeProperty ;
+    rdfs:domain eco:Enterprise ;
+    rdfs:range xsd:integer ;
+    rdfs:label "Number of Employees" .
+
+eco:roadLength
+    a owl:DatatypeProperty ;
+    rdfs:domain eco:Road ;
+    rdfs:range xsd:decimal ;
+    rdfs:label "Road Length (km)" .
+
+eco:completionYear
+    a owl:DatatypeProperty ;
+    rdfs:domain eco:Road ;
+    rdfs:range xsd:gYear ;
+    rdfs:label "Completion Year" .
+
+eco:indicatorValue
+    a owl:DatatypeProperty ;
+    rdfs:domain eco:SocioEconomicIndicator ;
+    rdfs:range xsd:string ;
+    rdfs:label "Indicator Value" .
+
+#################################################################
+# SKOS CONCEPT SCHEME FOR DEPRIVATION
+#################################################################
+
+eco:DeprivationScheme
+    a skos:ConceptScheme ;
+    rdfs:label "Deprivation Classification Scheme" .
+
+eco:Deprived
+    a skos:Concept , eco:SocioEconomicIndicator ;
+    skos:prefLabel "Deprived Household" ;
+    skos:inScheme eco:DeprivationScheme .
+
+eco:NonDeprived
+    a skos:Concept , eco:SocioEconomicIndicator ;
+    skos:prefLabel "Non-Deprived Household" ;
+    skos:inScheme eco:DeprivationScheme .

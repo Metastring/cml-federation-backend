@@ -3,3 +3,5 @@ uvicorn
 psycopg2
 httpx==0.28.1
 python-dotenv
+python-multipart
+openpyxl

@@ -1,0 +1,253 @@
+@prefix : <http://cml.org/metadata#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+#################################################################
+# ONTOLOGY DECLARATION
+#################################################################
+
+:MetadataOntology rdf:type owl:Ontology ;
+    rdfs:label "CML Metadata Ontology" ;
+    rdfs:comment "Ontology representing dataset metadata structure for CML platform." .
+
+#################################################################
+# CORE CLASS
+#################################################################
+
+:Dataset rdf:type owl:Class ;
+    rdfs:label "Dataset" .
+
+#################################################################
+# METADATA CATEGORY CLASSES
+#################################################################
+
+:GovernanceMetadata rdf:type owl:Class .
+:OperationalMetadata rdf:type owl:Class .
+:TechnicalMetadata rdf:type owl:Class .
+:QualityMetadata rdf:type owl:Class .
+:UsageMetadata rdf:type owl:Class .
+:CollaborationMetadata rdf:type owl:Class .
+:DatasetScope rdf:type owl:Class .
+:DatasetStatistics rdf:type owl:Class .
+:Publisher rdf:type owl:Class .
+:Contact rdf:type owl:Class .
+:Category rdf:type owl:Class .
+:Source rdf:type owl:Class .
+:Tag rdf:type owl:Class .
+
+#################################################################
+# OBJECT PROPERTIES (RELATIONSHIPS)
+#################################################################
+
+:hasGovernanceMetadata rdf:type owl:ObjectProperty ;
+    rdfs:domain :Dataset ;
+    rdfs:range :GovernanceMetadata .
+
+:hasOperationalMetadata rdf:type owl:ObjectProperty ;
+    rdfs:domain :Dataset ;
+    rdfs:range :OperationalMetadata .
+
+:hasTechnicalMetadata rdf:type owl:ObjectProperty ;
+    rdfs:domain :Dataset ;
+    rdfs:range :TechnicalMetadata .
+
+:hasQualityMetadata rdf:type owl:ObjectProperty ;
+    rdfs:domain :Dataset ;
+    rdfs:range :QualityMetadata .
+
+:hasUsageMetadata rdf:type owl:ObjectProperty ;
+    rdfs:domain :Dataset ;
+    rdfs:range :UsageMetadata .
+
+:hasCollaborationMetadata rdf:type owl:ObjectProperty ;
+    rdfs:domain :Dataset ;
+    rdfs:range :CollaborationMetadata .
+
+:hasScope rdf:type owl:ObjectProperty ;
+    rdfs:domain :Dataset ;
+    rdfs:range :DatasetScope .
+
+:hasStatistics rdf:type owl:ObjectProperty ;
+    rdfs:domain :Dataset ;
+    rdfs:range :DatasetStatistics .
+
+:hasPublisher rdf:type owl:ObjectProperty ;
+    rdfs:domain :Dataset ;
+    rdfs:range :Publisher .
+
+:hasContact rdf:type owl:ObjectProperty ;
+    rdfs:domain :Dataset ;
+    rdfs:range :Contact .
+
+:hasCategory rdf:type owl:ObjectProperty ;
+    rdfs:domain :Dataset ;
+    rdfs:range :Category .
+
+:hasSource rdf:type owl:ObjectProperty ;
+    rdfs:domain :Dataset ;
+    rdfs:range :Source .
+
+:hasTag rdf:type owl:ObjectProperty ;
+    rdfs:domain :Dataset ;
+    rdfs:range :Tag .
+
+#################################################################
+# COMMON DATASET PROPERTIES
+#################################################################
+
+:title rdf:type owl:DatatypeProperty ;
+    rdfs:domain :Dataset ;
+    rdfs:range xsd:string .
+
+:description rdf:type owl:DatatypeProperty ;
+    rdfs:domain :Dataset ;
+    rdfs:range xsd:string .
+
+:doi rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+:publicationDate rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:date .
+
+:status rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+:license rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+:createdAt rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:dateTime .
+
+:updatedAt rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:dateTime .
+
+#################################################################
+# GOVERNANCE METADATA PROPERTIES
+#################################################################
+
+:dataOwner rdf:type owl:DatatypeProperty ;
+    rdfs:domain :GovernanceMetadata ;
+    rdfs:range xsd:string .
+
+:ownerEmail rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+:accessLevel rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+:complianceStatus rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+:dataClassification rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+:retentionPolicy rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+:piiPresent rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:boolean .
+
+#################################################################
+# TECHNICAL METADATA PROPERTIES
+#################################################################
+
+:dataFormat rdf:type owl:DatatypeProperty ;
+    rdfs:domain :TechnicalMetadata ;
+    rdfs:range xsd:string .
+
+:encoding rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+:rowCount rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:integer .
+
+:columnCount rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:integer .
+
+:fileSize rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:decimal .
+
+:primaryKey rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+:storageLocation rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+:apiEndpoint rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+#################################################################
+# OPERATIONAL METADATA PROPERTIES
+#################################################################
+
+:refreshFrequency rdf:type owl:DatatypeProperty ;
+    rdfs:domain :OperationalMetadata ;
+    rdfs:range xsd:string .
+
+:refreshMethod rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+:environment rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+:lastJobRunTime rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:dateTime .
+
+#################################################################
+# QUALITY METADATA PROPERTIES
+#################################################################
+
+:completenessScore rdf:type owl:DatatypeProperty ;
+    rdfs:domain :QualityMetadata ;
+    rdfs:range xsd:decimal .
+
+:accuracyScore rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:decimal .
+
+:freshnessScore rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:decimal .
+
+:consistencyScore rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:decimal .
+
+:nullPercentage rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:decimal .
+
+:validationStatus rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+#################################################################
+# USAGE METADATA PROPERTIES
+#################################################################
+
+:viewCount rdf:type owl:DatatypeProperty ;
+    rdfs:domain :UsageMetadata ;
+    rdfs:range xsd:integer .
+
+:downloadCount rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:integer .
+
+:apiCallCount rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:integer .
+
+:popularityScore rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:decimal .
+
+#################################################################
+# DATASET SCOPE PROPERTIES
+#################################################################
+
+:temporalStartDate rdf:type owl:DatatypeProperty ;
+    rdfs:domain :DatasetScope ;
+    rdfs:range xsd:date .
+
+:temporalEndDate rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:date .
+
+:geographicScope rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:string .
+
+:taxonomicScope rdf:type owl:DatatypeProperty ;
+    rdfs:range xsd:string .

@@ -160,7 +160,6 @@ def get_metadata(title: str, category_name: str):
 
                 m.field_name,
                 m.ontology_mapping,
-                m.ontology_mapping_to_display,
                 m.data_type,
 
                 st.stat_name,
@@ -250,7 +249,6 @@ def get_metadata(title: str, category_name: str):
             field = {
                 "field_name": row['field_name'],
                 "ontology_mapping": row['ontology_mapping'],
-                "ontology_mapping_to_display": row.get('ontology_mapping_to_display'),
                 "data_type": row['data_type']
             }
             if field not in dataset_details["fields"]:
@@ -303,8 +301,7 @@ def _upsert_single_metadata(cursor, table_name: str, dataset_id: str, data: dict
 def _import_metadata_from_payload(payload: MetadataImportRequest):
     """Core implementation for importing metadata from a structured payload.
 
-    This is shared by the JSON body endpoint and the JSON-file upload
-    endpoint so that both paths behave identically.
+    Shared by JSON body and JSON-file upload endpoints.
     """
 
     conn = get_connection()
@@ -368,12 +365,6 @@ def _import_metadata_from_payload(payload: MetadataImportRequest):
 
 @router.post("/v2/metadata/import-json")
 def import_metadata_json(payload: MetadataImportRequest):
-    """Import metadata when the frontend sends a JSON body.
-
-    This corresponds to the "text box" workflow where values are
-    collected into a JSON structure and posted directly.
-    """
-
     return _import_metadata_from_payload(payload)
 
 
@@ -381,9 +372,8 @@ def import_metadata_json(payload: MetadataImportRequest):
 async def import_metadata_json_file(file: UploadFile = File(...)):
     """Import metadata from an uploaded JSON file.
 
-    The uploaded file must contain the same structure expected by
-    MetadataImportRequest (i.e., {"items": [...]}) so that the
-    behaviour matches /v2/metadata/import-json.
+    The file must contain the same structure expected by
+    MetadataImportRequest.
     """
 
     try:
@@ -400,7 +390,6 @@ async def import_metadata_json_file(file: UploadFile = File(...)):
 
         return _import_metadata_from_payload(payload)
     except HTTPException:
-        # Re-raise HTTPExceptions so FastAPI preserves the status code
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -411,31 +400,7 @@ async def import_metadata_csv(
     category: str = Query(..., regex="^(technical|governance|operational|collaboration|quality|usage)$"),
     file: UploadFile = File(...),
 ):
-    """Import metadata for a single category from a CSV or XLSX file.
-
-    Behaviour is identical for CSV and Excel files: the first row is
-    treated as headers and subsequent rows as records.
-
-    Options:
-    - If a column named "dataset_id" is present and non-empty,
-      that dataset_id will be used and the corresponding metadata row
-      will be upserted.
-    - If "dataset_id" is missing or empty, a new dataset_master row
-      will be created and its dataset_id will be generated, then used
-      for the metadata insert.
-
-    Expected columns when creating new datasets (no dataset_id):
-    - Core dataset_master fields (optional but recommended):
-        title (strongly recommended), description, dataset_version,
-        schema_version, domain, dataset_type, language,
-        source_system, status
-    - Metadata fields for the selected category (e.g., for
-      category=technical: data_format, encoding, row_count, ...).
-
-    Any columns matching the core dataset_master field names will be
-    used to create the dataset; remaining columns will be applied to
-    the specific metadata table.
-    """
+    """Import metadata for a single category from a CSV or XLSX file."""
 
     table_map = {
         "technical": "technical_metadata",
@@ -448,12 +413,10 @@ async def import_metadata_csv(
 
     try:
         content = await file.read()
-
-        # Decide how to parse based on file extension; default to CSV
         filename = (file.filename or "").lower()
+
         rows = []
         if filename.endswith(".xlsx") or filename.endswith(".xlsm"):
-            # Parse Excel using openpyxl
             try:
                 wb = load_workbook(io.BytesIO(content), data_only=True)
                 ws = wb.active
@@ -467,7 +430,6 @@ async def import_metadata_csv(
                     continue
 
                 if not any(cell is not None and str(cell).strip() != "" for cell in excel_row):
-                    # Skip completely empty rows
                     continue
 
                 row_dict = {}
@@ -478,7 +440,6 @@ async def import_metadata_csv(
                     row_dict[header] = value
                 rows.append(row_dict)
         else:
-            # Fallback: treat as CSV text
             try:
                 text_stream = io.StringIO(content.decode("utf-8"))
             except Exception:
@@ -489,7 +450,6 @@ async def import_metadata_csv(
         conn = get_connection()
         cursor = conn.cursor()
 
-        # Columns that belong to dataset_master when creating new datasets
         dataset_master_fields = {
             "title",
             "description",
@@ -506,7 +466,6 @@ async def import_metadata_csv(
         for row in rows:
             dataset_id = row.get("dataset_id")
 
-            # If dataset_id is missing or empty, create a new dataset_master row
             if not dataset_id or str(dataset_id).strip() == "":
                 dm_data = {
                     k: v
@@ -515,7 +474,6 @@ async def import_metadata_csv(
                 }
 
                 if "title" not in dm_data:
-                    # Cannot create a dataset without a title; skip this row
                     continue
 
                 dm_columns = list(dm_data.keys())
@@ -529,7 +487,6 @@ async def import_metadata_csv(
                 )
                 dataset_id = cursor.fetchone()[0]
 
-            # Build metadata payload from the remaining columns (excluding dataset_id and core dataset fields)
             data = {
                 k: (v if v != "" else None)
                 for k, v in row.items()
@@ -555,14 +512,7 @@ async def import_metadata_csv(
 
 
 @router.get("/v2/metadata/search")
-def search_metadata(
-    query: str = Query(..., min_length=1),
-    where_to_search: str = Query(
-        "anywhere",
-        regex="^(anywhere|indicator)$",
-        description="anywhere = search across all metadata; indicator = search only in ontology_mapping_to_display",
-    ),
-):
+def search_metadata(query: str = Query(..., min_length=1)):
     """Search across dataset and standard metadata.
 
     The search is case-insensitive and matches substrings, so it works
@@ -577,217 +527,170 @@ def search_metadata(
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        if where_to_search == "indicator":
-            # Search only within ontology_mapping_to_display in dataset_mapping
-            cursor.execute(
-                """
-                SELECT
-                    ds.dataset_id,
-                    ds.title AS dataset_title,
-                    ds.description,
-                    cat.category_id,
-                    cat.category_name,
-                    ARRAY_AGG(DISTINCT dm.ontology_mapping_to_display) AS indicators
-                FROM
-                    dataset_master ds
-                LEFT JOIN category_master cat ON ds.category_id = cat.category_id
-                JOIN dataset_mapping dm ON dm.dataset_id = ds.dataset_id
-                WHERE
-                    ds.is_active = TRUE
-                    AND LOWER(COALESCE(dm.ontology_mapping_to_display, '')) LIKE %s
-                GROUP BY
-                    ds.dataset_id,
-                    ds.title,
-                    ds.description,
-                    cat.category_id,
-                    cat.category_name
-                ORDER BY
-                    cat.category_name,
-                    ds.title;
-                """,
-                (search_pattern,),
-            )
-        else:
-            # Search across all metadata (existing behaviour), and also
-            # collect matching indicators (ontology_mapping_to_display)
-            cursor.execute(
-                """
-                SELECT
-                    ds.dataset_id,
-                    ds.title AS dataset_title,
-                    ds.description,
-                    cat.category_id,
-                    cat.category_name,
-                    ARRAY_AGG(
-                        DISTINCT CASE
-                            WHEN LOWER(COALESCE(dm.ontology_mapping_to_display, '')) LIKE %s
-                            THEN dm.ontology_mapping_to_display
-                            ELSE NULL
-                        END
-                    ) AS indicators
-                FROM
-                    dataset_master ds
-                LEFT JOIN category_master cat ON ds.category_id = cat.category_id
-                LEFT JOIN technical_metadata tm ON tm.dataset_id = ds.dataset_id
-                LEFT JOIN governance_metadata gm ON gm.dataset_id = ds.dataset_id
-                LEFT JOIN operational_metadata om ON om.dataset_id = ds.dataset_id
-                LEFT JOIN collaboration_metadata cm ON cm.dataset_id = ds.dataset_id
-                LEFT JOIN quality_metadata qm ON qm.dataset_id = ds.dataset_id
-                LEFT JOIN usage_metadata um ON um.dataset_id = ds.dataset_id
-                LEFT JOIN dataset_mapping dm ON dm.dataset_id = ds.dataset_id
-                LEFT JOIN dataset_contacts c ON c.dataset_id = ds.dataset_id
-                LEFT JOIN dataset_publisher p ON p.dataset_id = ds.dataset_id
-                LEFT JOIN dataset_scope s ON s.dataset_id = ds.dataset_id
-                LEFT JOIN dataset_tags dt ON dt.dataset_id = ds.dataset_id
-                LEFT JOIN tags t ON t.tag_id = dt.tag_id
-                WHERE
-                    ds.is_active = TRUE
-                    AND LOWER(
-                        -- dataset_master (all non-id columns)
-                        COALESCE(ds.title, '') || ' ' ||
-                        COALESCE(ds.description, '') || ' ' ||
-                        COALESCE(ds.citation, '') || ' ' ||
-                        COALESCE(ds.doi, '') || ' ' ||
-                        COALESCE(ds.language, '') || ' ' ||
-                        COALESCE(ds.data_language, '') || ' ' ||
-                        COALESCE(ds.license, '') || ' ' ||
-                        COALESCE(ds.dataset_version, '') || ' ' ||
-                        COALESCE(ds.schema_version, '') || ' ' ||
-                        COALESCE(ds.domain, '') || ' ' ||
-                        COALESCE(ds.dataset_type, '') || ' ' ||
-                        COALESCE(ds.source_system, '') || ' ' ||
-                        COALESCE(ds.status, '') || ' ' ||
-                        COALESCE(ds.keywords::text, '') || ' ' ||
-                        COALESCE(ds.publication_date::text, '') || ' ' ||
-                        COALESCE(ds.metadata_modified_date::text, '') || ' ' ||
-                        COALESCE(ds.registration_date::text, '') || ' ' ||
-                        COALESCE(ds.is_active::text, '') || ' ' ||
-                        COALESCE(ds.created_at::text, '') || ' ' ||
-                        COALESCE(ds.updated_at::text, '') || ' ' ||
+        cursor.execute(
+            """
+            SELECT DISTINCT
+                ds.dataset_id,
+                ds.title AS dataset_title,
+                ds.description,
+                cat.category_id,
+                cat.category_name
+            FROM
+                dataset_master ds
+            LEFT JOIN category_master cat ON ds.category_id = cat.category_id
+            LEFT JOIN technical_metadata tm ON tm.dataset_id = ds.dataset_id
+            LEFT JOIN governance_metadata gm ON gm.dataset_id = ds.dataset_id
+            LEFT JOIN operational_metadata om ON om.dataset_id = ds.dataset_id
+            LEFT JOIN collaboration_metadata cm ON cm.dataset_id = ds.dataset_id
+            LEFT JOIN quality_metadata qm ON qm.dataset_id = ds.dataset_id
+            LEFT JOIN usage_metadata um ON um.dataset_id = ds.dataset_id
+            LEFT JOIN dataset_mapping dm ON dm.dataset_id = ds.dataset_id
+            LEFT JOIN dataset_contacts c ON c.dataset_id = ds.dataset_id
+            LEFT JOIN dataset_publisher p ON p.dataset_id = ds.dataset_id
+            LEFT JOIN dataset_scope s ON s.dataset_id = ds.dataset_id
+            LEFT JOIN dataset_tags dt ON dt.dataset_id = ds.dataset_id
+            LEFT JOIN tags t ON t.tag_id = dt.tag_id
+            WHERE
+                ds.is_active = TRUE
+                AND LOWER(
+                    -- dataset_master (all non-id columns)
+                    COALESCE(ds.title, '') || ' ' ||
+                    COALESCE(ds.description, '') || ' ' ||
+                    COALESCE(ds.citation, '') || ' ' ||
+                    COALESCE(ds.doi, '') || ' ' ||
+                    COALESCE(ds.language, '') || ' ' ||
+                    COALESCE(ds.data_language, '') || ' ' ||
+                    COALESCE(ds.license, '') || ' ' ||
+                    COALESCE(ds.dataset_version, '') || ' ' ||
+                    COALESCE(ds.schema_version, '') || ' ' ||
+                    COALESCE(ds.domain, '') || ' ' ||
+                    COALESCE(ds.dataset_type, '') || ' ' ||
+                    COALESCE(ds.source_system, '') || ' ' ||
+                    COALESCE(ds.status, '') || ' ' ||
+                    COALESCE(ds.keywords::text, '') || ' ' ||
+                    COALESCE(ds.publication_date::text, '') || ' ' ||
+                    COALESCE(ds.metadata_modified_date::text, '') || ' ' ||
+                    COALESCE(ds.registration_date::text, '') || ' ' ||
+                    COALESCE(ds.is_active::text, '') || ' ' ||
+                    COALESCE(ds.created_at::text, '') || ' ' ||
+                    COALESCE(ds.updated_at::text, '') || ' ' ||
 
-                        -- category
-                        COALESCE(cat.category_name, '') || ' ' ||
+                    -- category
+                    COALESCE(cat.category_name, '') || ' ' ||
 
-                        -- technical_metadata (all non-id columns)
-                        COALESCE(tm.data_format, '') || ' ' ||
-                        COALESCE(tm.encoding, '') || ' ' ||
-                        COALESCE(tm.row_count::text, '') || ' ' ||
-                        COALESCE(tm.column_count::text, '') || ' ' ||
-                        COALESCE(tm.file_size::text, '') || ' ' ||
-                        COALESCE(tm.primary_key, '') || ' ' ||
-                        COALESCE(tm.storage_location, '') || ' ' ||
-                        COALESCE(tm.api_endpoint, '') || ' ' ||
-                        COALESCE(tm.rdf_graph_uri, '') || ' ' ||
-                        COALESCE(tm.ontology_reference, '') || ' ' ||
-                        COALESCE(tm.created_at::text, '') || ' ' ||
-                        COALESCE(tm.updated_at::text, '') || ' ' ||
+                    -- technical_metadata (all non-id columns)
+                    COALESCE(tm.data_format, '') || ' ' ||
+                    COALESCE(tm.encoding, '') || ' ' ||
+                    COALESCE(tm.row_count::text, '') || ' ' ||
+                    COALESCE(tm.column_count::text, '') || ' ' ||
+                    COALESCE(tm.file_size::text, '') || ' ' ||
+                    COALESCE(tm.primary_key, '') || ' ' ||
+                    COALESCE(tm.storage_location, '') || ' ' ||
+                    COALESCE(tm.api_endpoint, '') || ' ' ||
+                    COALESCE(tm.rdf_graph_uri, '') || ' ' ||
+                    COALESCE(tm.ontology_reference, '') || ' ' ||
+                    COALESCE(tm.created_at::text, '') || ' ' ||
+                    COALESCE(tm.updated_at::text, '') || ' ' ||
 
-                        -- governance_metadata (all non-id columns)
-                        COALESCE(gm.data_owner, '') || ' ' ||
-                        COALESCE(gm.data_steward, '') || ' ' ||
-                        COALESCE(gm.owner_email, '') || ' ' ||
-                        COALESCE(gm.compliance_status, '') || ' ' ||
-                        COALESCE(gm.access_level, '') || ' ' ||
-                        COALESCE(gm.data_classification, '') || ' ' ||
-                        COALESCE(gm.retention_policy, '') || ' ' ||
-                        COALESCE(gm.pii_present::text, '') || ' ' ||
-                        COALESCE(gm.license, '') || ' ' ||
-                        COALESCE(gm.created_at::text, '') || ' ' ||
-                        COALESCE(gm.updated_at::text, '') || ' ' ||
+                    -- governance_metadata (all non-id columns)
+                    COALESCE(gm.data_owner, '') || ' ' ||
+                    COALESCE(gm.data_steward, '') || ' ' ||
+                    COALESCE(gm.owner_email, '') || ' ' ||
+                    COALESCE(gm.compliance_status, '') || ' ' ||
+                    COALESCE(gm.access_level, '') || ' ' ||
+                    COALESCE(gm.data_classification, '') || ' ' ||
+                    COALESCE(gm.retention_policy, '') || ' ' ||
+                    COALESCE(gm.pii_present::text, '') || ' ' ||
+                    COALESCE(gm.license, '') || ' ' ||
+                    COALESCE(gm.created_at::text, '') || ' ' ||
+                    COALESCE(gm.updated_at::text, '') || ' ' ||
 
-                        -- operational_metadata (all non-id columns)
-                        COALESCE(om.publish_date::text, '') || ' ' ||
-                        COALESCE(om.registration_date::text, '') || ' ' ||
-                        COALESCE(om.last_refresh_date::text, '') || ' ' ||
-                        COALESCE(om.refresh_frequency, '') || ' ' ||
-                        COALESCE(om.refresh_method, '') || ' ' ||
-                        COALESCE(om.environment, '') || ' ' ||
-                        COALESCE(om.ingestion_pipeline, '') || ' ' ||
-                        COALESCE(om.supported_by, '') || ' ' ||
-                        COALESCE(om.last_job_run_time::text, '') || ' ' ||
-                        COALESCE(om.created_at::text, '') || ' ' ||
-                        COALESCE(om.updated_at::text, '') || ' ' ||
+                    -- operational_metadata (all non-id columns)
+                    COALESCE(om.publish_date::text, '') || ' ' ||
+                    COALESCE(om.registration_date::text, '') || ' ' ||
+                    COALESCE(om.last_refresh_date::text, '') || ' ' ||
+                    COALESCE(om.refresh_frequency, '') || ' ' ||
+                    COALESCE(om.refresh_method, '') || ' ' ||
+                    COALESCE(om.environment, '') || ' ' ||
+                    COALESCE(om.ingestion_pipeline, '') || ' ' ||
+                    COALESCE(om.supported_by, '') || ' ' ||
+                    COALESCE(om.last_job_run_time::text, '') || ' ' ||
+                    COALESCE(om.created_at::text, '') || ' ' ||
+                    COALESCE(om.updated_at::text, '') || ' ' ||
 
-                        -- collaboration_metadata (all non-id columns)
-                        COALESCE(cm.review_status, '') || ' ' ||
-                        COALESCE(cm.rating::text, '') || ' ' ||
-                        COALESCE(cm.documentation_link, '') || ' ' ||
-                        COALESCE(cm.tags, '') || ' ' ||
-                        COALESCE(cm.created_at::text, '') || ' ' ||
-                        COALESCE(cm.updated_at::text, '') || ' ' ||
+                    -- collaboration_metadata (all non-id columns)
+                    COALESCE(cm.review_status, '') || ' ' ||
+                    COALESCE(cm.rating::text, '') || ' ' ||
+                    COALESCE(cm.documentation_link, '') || ' ' ||
+                    COALESCE(cm.tags, '') || ' ' ||
+                    COALESCE(cm.created_at::text, '') || ' ' ||
+                    COALESCE(cm.updated_at::text, '') || ' ' ||
 
-                        -- quality_metadata (all non-id columns)
-                        COALESCE(qm.completeness_score::text, '') || ' ' ||
-                        COALESCE(qm.accuracy_score::text, '') || ' ' ||
-                        COALESCE(qm.freshness_score::text, '') || ' ' ||
-                        COALESCE(qm.consistency_score::text, '') || ' ' ||
-                        COALESCE(qm.duplicate_count::text, '') || ' ' ||
-                        COALESCE(qm.null_percentage::text, '') || ' ' ||
-                        COALESCE(qm.validation_status, '') || ' ' ||
-                        COALESCE(qm.last_quality_check_date::text, '') || ' ' ||
-                        COALESCE(qm.created_at::text, '') || ' ' ||
-                        COALESCE(qm.updated_at::text, '') || ' ' ||
+                    -- quality_metadata (all non-id columns)
+                    COALESCE(qm.completeness_score::text, '') || ' ' ||
+                    COALESCE(qm.accuracy_score::text, '') || ' ' ||
+                    COALESCE(qm.freshness_score::text, '') || ' ' ||
+                    COALESCE(qm.consistency_score::text, '') || ' ' ||
+                    COALESCE(qm.duplicate_count::text, '') || ' ' ||
+                    COALESCE(qm.null_percentage::text, '') || ' ' ||
+                    COALESCE(qm.validation_status, '') || ' ' ||
+                    COALESCE(qm.last_quality_check_date::text, '') || ' ' ||
+                    COALESCE(qm.created_at::text, '') || ' ' ||
+                    COALESCE(qm.updated_at::text, '') || ' ' ||
 
-                        -- usage_metadata (all non-id columns)
-                        COALESCE(um.query_count::text, '') || ' ' ||
-                        COALESCE(um.download_count::text, '') || ' ' ||
-                        COALESCE(um.api_call_count::text, '') || ' ' ||
-                        COALESCE(um.last_accessed::text, '') || ' ' ||
-                        COALESCE(um.active_users_count::text, '') || ' ' ||
-                        COALESCE(um.popularity_score::text, '') || ' ' ||
-                        COALESCE(um.created_at::text, '') || ' ' ||
-                        COALESCE(um.updated_at::text, '') || ' ' ||
+                    -- usage_metadata (all non-id columns)
+                    COALESCE(um.query_count::text, '') || ' ' ||
+                    COALESCE(um.download_count::text, '') || ' ' ||
+                    COALESCE(um.api_call_count::text, '') || ' ' ||
+                    COALESCE(um.last_accessed::text, '') || ' ' ||
+                    COALESCE(um.active_users_count::text, '') || ' ' ||
+                    COALESCE(um.popularity_score::text, '') || ' ' ||
+                    COALESCE(um.created_at::text, '') || ' ' ||
+                    COALESCE(um.updated_at::text, '') || ' ' ||
 
-                        -- dataset_contacts (all non-id columns we use)
-                        COALESCE(c.name, '') || ' ' ||
-                        COALESCE(c.role, '') || ' ' ||
-                        COALESCE(c.email, '') || ' ' ||
-                        COALESCE(c.organization, '') || ' ' ||
-                        COALESCE(c.address, '') || ' ' ||
-                        COALESCE(c.city, '') || ' ' ||
-                        COALESCE(c.state, '') || ' ' ||
-                        COALESCE(c.country, '') || ' ' ||
+                    -- dataset_contacts (all non-id columns we use)
+                    COALESCE(c.name, '') || ' ' ||
+                    COALESCE(c.role, '') || ' ' ||
+                    COALESCE(c.email, '') || ' ' ||
+                    COALESCE(c.organization, '') || ' ' ||
+                    COALESCE(c.address, '') || ' ' ||
+                    COALESCE(c.city, '') || ' ' ||
+                    COALESCE(c.state, '') || ' ' ||
+                    COALESCE(c.country, '') || ' ' ||
 
-                        -- dataset_publisher (all non-id columns)
-                        COALESCE(p.publisher_name, '') || ' ' ||
-                        COALESCE(p.country, '') || ' ' ||
-                        COALESCE(p.record_count::text, '') || ' ' ||
+                    -- dataset_publisher (all non-id columns)
+                    COALESCE(p.publisher_name, '') || ' ' ||
+                    COALESCE(p.country, '') || ' ' ||
+                    COALESCE(p.record_count::text, '') || ' ' ||
 
-                        -- dataset_scope (all non-id columns)
-                        COALESCE(s.temporal_start_date::text, '') || ' ' ||
-                        COALESCE(s.temporal_end_date::text, '') || ' ' ||
-                        COALESCE(s.geographic_scope, '') || ' ' ||
-                        COALESCE(s.taxonomic_scope, '') || ' ' ||
-                        COALESCE(s.taxonomic_authority, '') || ' ' ||
+                    -- dataset_scope (all non-id columns)
+                    COALESCE(s.temporal_start_date::text, '') || ' ' ||
+                    COALESCE(s.temporal_end_date::text, '') || ' ' ||
+                    COALESCE(s.geographic_scope, '') || ' ' ||
+                    COALESCE(s.taxonomic_scope, '') || ' ' ||
+                    COALESCE(s.taxonomic_authority, '') || ' ' ||
 
-                        -- dataset_mapping (all non-id columns we use)
-                        COALESCE(dm.field_name, '') || ' ' ||
-                        COALESCE(dm.ontology_mapping, '') || ' ' ||
-                        COALESCE(dm.ontology_mapping_to_display, '') || ' ' ||
-                        COALESCE(dm.data_type, '') || ' ' ||
+                    -- dataset_mapping (all non-id columns we use)
+                    COALESCE(dm.field_name, '') || ' ' ||
+                    COALESCE(dm.ontology_mapping, '') || ' ' ||
+                    COALESCE(dm.ontology_mapping_to_display, '') || ' ' ||
+                    COALESCE(dm.data_type, '') || ' ' ||
 
-                        -- tags (all non-id columns)
-                        COALESCE(t.tag_name, '') || ' ' ||
-                        COALESCE(t.created_at::text, '')
-                    ) LIKE %s
-                GROUP BY
-                    ds.dataset_id,
-                    ds.title,
-                    ds.description,
-                    cat.category_id,
-                    cat.category_name
-                ORDER BY
-                    cat.category_name,
-                    ds.title;
-                """,
-                (search_pattern, search_pattern),
-            )
+                    -- tags (all non-id columns)
+                    COALESCE(t.tag_name, '') || ' ' ||
+                    COALESCE(t.created_at::text, '')
+                ) LIKE %s
+            ORDER BY
+                cat.category_name,
+                ds.title;
+            """,
+            (search_pattern,),
+        )
 
         rows = cursor.fetchall() or []
 
         return {
             "query": query,
-            "where_to_search": where_to_search,
             "results": [
                 {
                     "dataset_id": row["dataset_id"],
@@ -795,11 +698,6 @@ def search_metadata(
                     "description": row["description"],
                     "category_id": row["category_id"],
                     "category_name": row["category_name"],
-                    "indicators": [
-                        indicator
-                        for indicator in (row.get("indicators") or [])
-                        if indicator is not None
-                    ],
                 }
                 for row in rows
             ],
@@ -863,16 +761,6 @@ def get_standard_metadata(dataset_id: str):
         )
         tags = cursor.fetchall() or []
 
-        # Indicators (ontology_mapping_to_display from dataset_mapping)
-        cursor.execute(
-            "SELECT DISTINCT ontology_mapping_to_display "
-            "FROM dataset_mapping "
-            "WHERE dataset_id = %s AND ontology_mapping_to_display IS NOT NULL",
-            (dataset_id,),
-        )
-        indicators_rows = cursor.fetchall() or []
-        indicators = [row["ontology_mapping_to_display"] for row in indicators_rows]
-
         return {
             "dataset_id": dataset_id,
             "dataset": dataset_row,
@@ -884,7 +772,6 @@ def get_standard_metadata(dataset_id: str):
             "usage": usage,
             "users": users,
             "tags": tags,
-            "indicators": indicators,
         }
     finally:
         conn.close()
