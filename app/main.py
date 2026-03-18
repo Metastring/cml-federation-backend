@@ -40,8 +40,8 @@ app.include_router(ontology.biodiversity_router)
 PARTICIPANTS = {
     "Kew Plant Database": "http://134.209.145.106:8000/search",
     "Citizens’ Portal of Medicinal Plants": "http://139.59.84.243:8050/search",
-    "CPMP Botanical Source": "https://cpmp.tdu.edu.in/api/species/search/v2",
-    "CPMP Drug Source": "https://cpmp.tdu.edu.in/api/drugs/search/search/drug",
+    "CPMP Botanical Source": "http://139.59.84.243:9088/cml/search",
+    "CPMP Drug Source": "http://139.59.84.243:9087/search/search/drugname",
     "Traded Medicinal Plants of India (TMPI)": "https://tradedmedicinalplants.org/kew/webapi/advance/search",
     "Ayurahaar – The Ahara & Nutrition Portal": "https://ayurahaar.org/FoodType/webapi/ingredient/ingredient-property-list",
     "Rasashastra: A Database of Metals and Minerals used in Ayurveda": "https://rasashastra.tdu.edu.in/mm_api/advanced/search",
@@ -144,6 +144,26 @@ def _normalize_dataset_name(name: str) -> str:
 
     return name.strip().lower().replace("’", "'")
 
+
+def _canonical_field_name(field: str) -> str:
+    """Return the canonical field name used in responses.
+
+    For some datasets we accept an alias in the request but
+    surface a more explicit name in the federated response.
+    """
+
+    if not field:
+        return field
+
+    f = field.strip().lower()
+
+    # Ayurahaar: the logical output column is "recipe_name",
+    # even though the federated request field is "recipe".
+    if f == "recipe":
+        return "recipe_name"
+
+    return field
+
 # Updated request payload model
 class FederatedSearchRequest(BaseModel):
     category: list[str]
@@ -153,17 +173,11 @@ class FederatedSearchRequest(BaseModel):
 
 async def fetch_from_participant(client, participant_name: str, url: str, field: str, query: str):
     try:
-        # Special handling for CPMP Drug Source which exposes
-        # a POST JSON API for drug search.
-        if "cpmp.tdu.edu.in/api/drugs/search/search/drug" in url:
-            payload = {
-                "page": "1",
-                "size": "25",
-            }
-            if query:
-                # The CPMP drugs API expects the keyword in the body;
-                # pass our federated search_text through unchanged.
-                payload["keyword"] = query
+        # Special handling for CPMP Drug Source which now exposes
+        # a POST JSON API at the new endpoint. The request body is a
+        # plain JSON string containing the search text.
+        if "139.59.84.243:9087/search/search/drugname" in url:
+            payload = query or ""
 
             response = await client.post(url, json=payload)
             response.raise_for_status()
@@ -198,25 +212,33 @@ async def fetch_from_participant(client, participant_name: str, url: str, field:
                 "results": normalised_items,
             }
 
-        # Special handling for CPMP Botanical Source which exposes
-        # a POST JSON API for species search.
-        if "cpmp.tdu.edu.in/api/species/search/v2" in url:
-            payload = {
-                "taxon_status": ["Accepted"],
-                "page": "1",
-                "size": "25",
+        # Special handling for CPMP Botanical Source which now exposes
+        # a GET API for species search.
+        if "139.59.84.243:9088/cml/search" in url:
+            # Map our federated field to the CPMP "search_parameter".
+            # The CPMP API only accepts "scientific_name" or "common_name".
+            field_norm = (field or "").strip().lower()
+            if field_norm in {"scientific_name", "taxon_name"}:
+                search_parameter = "scientific_name"
+            elif field_norm in {"vernacular_name_common_names", "common_name", "common_names"}:
+                search_parameter = "common_name"
+            else:
+                # Default to common_name when the requested field
+                # does not match one of the known scientific/common
+                # name identifiers.
+                search_parameter = "common_name"
+
+            params = {
+                "search_parameter": search_parameter,
+                "search_text": query or "",
             }
-            if query:
-                # The CPMP API expects the search keyword in the
-                # request body; we pass our federated search_text
-                # through as-is.
-                payload["keyword"] = query
 
-            response = await client.post(url, json=payload)
+            response = await client.get(url, params=params)
             response.raise_for_status()
-            data = response.json() or {}
+            data = response.json() or []
 
-            raw_items = data.get("searchResults", []) or []
+            # New CPMP API returns a top-level list of taxa.
+            raw_items = data if isinstance(data, list) else data.get("results", [])
             normalised_items = []
             for item in raw_items:
                 if not isinstance(item, dict):
@@ -657,7 +679,8 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
                 "field_results": {},
                 "is_occurance_available": occurrence_flags.get(pname, False),
             }
-        results[pname]["field_results"][item["field"]] = {
+        response_field = _canonical_field_name(item["field"])
+        results[pname]["field_results"][response_field] = {
             "results": item["results"],
             "error": item.get("error")
         }
@@ -667,7 +690,7 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
         "dataset": payload.dataset,
         "valid_datasets": [name for (name, _url) in resolved_participants],
         "invalid_datasets": invalid_datasets,   # <--- include info for debugging
-        "fields": payload.fields,
+        "fields": [_canonical_field_name(f) for f in payload.fields],
         "search_text": payload.search_text,
         "results": results
     }

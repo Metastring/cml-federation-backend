@@ -83,6 +83,110 @@ WHERE {
 }
 """
 
+# New ontology API - biodiversity ontology triples
+SPARQL_BIODIVERSITY_ONTOLOGY = """
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX owl: <http://www.w3.org/2002/07/owl#>
+PREFIX : <http://cml.org/ontology/>
+
+SELECT ?entity ?label ?type ?description
+WHERE {
+  GRAPH <http://cml.org/ontology/biodiversity> {
+    {
+      ?entity rdf:type owl:Class .
+      BIND("Class" AS ?type)
+    }
+    UNION
+    {
+      ?entity rdf:type owl:DatatypeProperty .
+      BIND("DatatypeProperty" AS ?type)
+    }
+
+    OPTIONAL { ?entity rdfs:label ?label }
+    OPTIONAL { ?entity rdfs:comment ?description }
+  }
+}
+ORDER BY ?type ?label
+"""
+
+# Query to get all OWL Classes
+SPARQL_OWL_CLASSES = """
+PREFIX owl: <http://www.w3.org/2002/07/owl#>
+
+SELECT ?class
+WHERE {
+  GRAPH <http://cml.org/ontology/biodiversity> {
+    ?class a owl:Class .
+  }
+}
+"""
+
+# Query to get all OWL Datatype Properties
+SPARQL_OWL_DATATYPE_PROPERTIES = """
+PREFIX owl: <http://www.w3.org/2002/07/owl#>
+
+SELECT ?property
+WHERE {
+  GRAPH <http://cml.org/ontology/biodiversity> {
+    ?property a owl:DatatypeProperty .
+  }
+}
+"""
+
+# Metadata ontology APIs - metadata ontology queries
+SPARQL_METADATA_ONTOLOGY = """
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX owl: <http://www.w3.org/2002/07/owl#>
+PREFIX : <http://cml.org/ontology/>
+
+SELECT ?entity ?label ?type ?description
+WHERE {
+  GRAPH <http://cml.org/ontology/metadata> {
+    {
+      ?entity rdf:type owl:Class .
+      BIND("Class" AS ?type)
+    }
+    UNION
+    {
+      ?entity rdf:type owl:DatatypeProperty .
+      BIND("DatatypeProperty" AS ?type)
+    }
+
+    OPTIONAL { ?entity rdfs:label ?label }
+    OPTIONAL { ?entity rdfs:comment ?description }
+  }
+}
+ORDER BY ?type ?label
+"""
+
+# Query to get all OWL Classes from metadata ontology
+SPARQL_METADATA_CLASSES = """
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX owl: <http://www.w3.org/2002/07/owl#>
+
+SELECT ?class
+WHERE {
+  GRAPH <http://cml.org/ontology/metadata> {
+    ?class rdf:type owl:Class .
+  }
+}
+ORDER BY ?class
+"""
+
+# Query to get all OWL Datatype Properties from metadata ontology
+SPARQL_METADATA_DATATYPE_PROPERTIES = """
+PREFIX owl: <http://www.w3.org/2002/07/owl#>
+
+SELECT ?property
+WHERE {
+  GRAPH <http://cml.org/ontology/metadata> {
+    ?property a owl:DatatypeProperty .
+  }
+}
+"""
+
 
 @biodiversity_router.get("/classes")
 def get_biodiversity_ontology_classes():
@@ -525,4 +629,275 @@ async def get_ontology_terms():
     return {
         "count": len(terms),
         "terms": terms,
+    }
+
+
+@router.get("/new-ontology-apis")
+async def get_biodiversity_ontology_data():
+    """Return biodiversity ontology classes and properties in structured format.
+
+    Queries the biodiversity graph to get all classes and datatype properties
+    with their labels, types, and descriptions.
+    """
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                FUSEKI_SPARQL_ENDPOINT,
+                data={"query": SPARQL_BIODIVERSITY_ONTOLOGY},
+                headers={"Accept": "application/sparql-results+json"},
+            )
+            response.raise_for_status()
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"Error contacting Fuseki: {exc}")
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=f"Fuseki returned error: {exc.response.text}")
+
+    data = response.json()
+    bindings = data.get("results", {}).get("bindings", [])
+
+    # Transform SPARQL results into the expected format
+    results = []
+    for binding in bindings:
+        entity_node = binding.get("entity", {})
+        label_node = binding.get("label", {})
+        type_node = binding.get("type", {})
+        description_node = binding.get("description", {})
+
+        entity_uri = entity_node.get("value", "")
+        label = label_node.get("value", "")
+        entity_type = type_node.get("value", "")
+        description = description_node.get("value", "")
+
+        # Extract local name from URI for entity
+        entity_local = _local_name(entity_uri) if entity_uri else ""
+
+        results.append({
+            "entity": entity_local,
+            "label": label if label else entity_local,  # Use local name as fallback
+            "type": entity_type,
+            "description": description
+        })
+
+    return {
+        "count": len(results),
+        "data": results
+    }
+
+
+@router.get("/biodiversity-classes")
+async def get_biodiversity_classes():
+    """Return all OWL classes from biodiversity ontology.
+
+    Queries the biodiversity graph to get all classes defined with owl:Class.
+    Expected to return 5 classes: Taxonomy, Product, Medicine, Recipe, Drug.
+    """
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                FUSEKI_SPARQL_ENDPOINT,
+                data={"query": SPARQL_OWL_CLASSES},
+                headers={"Accept": "application/sparql-results+json"},
+            )
+            response.raise_for_status()
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"Error contacting Fuseki: {exc}")
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=f"Fuseki returned error: {exc.response.text}")
+
+    data = response.json()
+    bindings = data.get("results", {}).get("bindings", [])
+
+    classes = []
+    for binding in bindings:
+        class_node = binding.get("class", {})
+        class_uri = class_node.get("value")
+        
+        if class_uri:
+            classes.append({
+                "class_uri": class_uri,
+                "local_name": _local_name(class_uri)
+            })
+
+    return {
+        "count": len(classes),
+        "classes": classes
+    }
+
+
+@router.get("/biodiversity-datatype-properties")
+async def get_biodiversity_datatype_properties():
+    """Return all OWL datatype properties from biodiversity ontology.
+
+    Queries the biodiversity graph to get all datatype properties defined with owl:DatatypeProperty.
+    Expected to return 11 properties: scientific_name, vernacular_name_common_names, trade_name, 
+    official_name, drug_name, disease, doshas, sanskrit_name, recipe, ingredient_name, english_name.
+    """
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                FUSEKI_SPARQL_ENDPOINT,
+                data={"query": SPARQL_OWL_DATATYPE_PROPERTIES},
+                headers={"Accept": "application/sparql-results+json"},
+            )
+            response.raise_for_status()
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"Error contacting Fuseki: {exc}")
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=f"Fuseki returned error: {exc.response.text}")
+
+    data = response.json()
+    bindings = data.get("results", {}).get("bindings", [])
+
+    properties = []
+    for binding in bindings:
+        property_node = binding.get("property", {})
+        property_uri = property_node.get("value")
+        
+        if property_uri:
+            properties.append({
+                "property_uri": property_uri,
+                "local_name": _local_name(property_uri)
+            })
+
+    return {
+        "count": len(properties),
+        "properties": properties
+    }
+
+
+# ==================== METADATA ONTOLOGY APIS ====================
+
+@router.get("/metadata-ontology-apis")
+async def get_metadata_ontology_data():
+    """Return metadata ontology classes and properties in structured format.
+
+    Queries the metadata graph to get all classes and datatype properties
+    with their labels, types, and descriptions.
+    """
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                FUSEKI_SPARQL_ENDPOINT,
+                data={"query": SPARQL_METADATA_ONTOLOGY},
+                headers={"Accept": "application/sparql-results+json"},
+            )
+            response.raise_for_status()
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"Error contacting Fuseki: {exc}")
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=f"Fuseki returned error: {exc.response.text}")
+
+    data = response.json()
+    bindings = data.get("results", {}).get("bindings", [])
+
+    # Transform SPARQL results into the expected format
+    results = []
+    for binding in bindings:
+        entity_node = binding.get("entity", {})
+        label_node = binding.get("label", {})
+        type_node = binding.get("type", {})
+        description_node = binding.get("description", {})
+
+        entity_uri = entity_node.get("value", "")
+        label = label_node.get("value", "")
+        entity_type = type_node.get("value", "")
+        description = description_node.get("value", "")
+
+        # Extract local name from URI for entity
+        entity_local = _local_name(entity_uri) if entity_uri else ""
+
+        results.append({
+            "entity": entity_local,
+            "label": label if label else entity_local,  # Use local name as fallback
+            "type": entity_type,
+            "description": description
+        })
+
+    return {
+        "count": len(results),
+        "data": results
+    }
+
+
+@router.get("/metadata-classes")
+async def get_metadata_classes():
+    """Return all OWL classes from metadata ontology.
+
+    Queries the metadata graph to get all classes defined with owl:Class.
+    """
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                FUSEKI_SPARQL_ENDPOINT,
+                data={"query": SPARQL_METADATA_CLASSES},
+                headers={"Accept": "application/sparql-results+json"},
+            )
+            response.raise_for_status()
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"Error contacting Fuseki: {exc}")
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=f"Fuseki returned error: {exc.response.text}")
+
+    data = response.json()
+    bindings = data.get("results", {}).get("bindings", [])
+
+    classes = []
+    for binding in bindings:
+        class_node = binding.get("class", {})
+        class_uri = class_node.get("value")
+        
+        if class_uri:
+            classes.append({
+                "class_uri": class_uri,
+                "local_name": _local_name(class_uri)
+            })
+
+    return {
+        "count": len(classes),
+        "classes": classes
+    }
+
+
+@router.get("/metadata-datatype-properties")
+async def get_metadata_datatype_properties():
+    """Return all OWL datatype properties from metadata ontology.
+
+    Queries the metadata graph to get all datatype properties defined with owl:DatatypeProperty.
+    """
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                FUSEKI_SPARQL_ENDPOINT,
+                data={"query": SPARQL_METADATA_DATATYPE_PROPERTIES},
+                headers={"Accept": "application/sparql-results+json"},
+            )
+            response.raise_for_status()
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"Error contacting Fuseki: {exc}")
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=f"Fuseki returned error: {exc.response.text}")
+
+    data = response.json()
+    bindings = data.get("results", {}).get("bindings", [])
+
+    properties = []
+    for binding in bindings:
+        property_node = binding.get("property", {})
+        property_uri = property_node.get("value")
+        
+        if property_uri:
+            properties.append({
+                "property_uri": property_uri,
+                "local_name": _local_name(property_uri)
+            })
+
+    return {
+        "count": len(properties),
+        "properties": properties
     }
