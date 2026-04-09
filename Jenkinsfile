@@ -2,73 +2,42 @@ pipeline {
     agent any
 
     environment {
-        PORT = '8000'
-        HOST = '0.0.0.0'
-        PYTHON_ENV = "${WORKSPACE}/env"
-        VENV_ACTIVATE = "${PYTHON_ENV}/bin/activate"
+        WORK_DIR = '/home/metastring/src/central_server'
     }
 
     stages {
-        stage('Checkout') {
+        stage('Deploy Code') {
             steps {
-                echo 'Checking out code...'
-                checkout scm
-            }
-        }
-
-        stage('Setup Environment') {
-            steps {
-                echo 'Setting up Python virtual environment...'
                 sh '''
-                    if [ ! -d "env" ]; then
-                        python3 -m venv env
-                    fi
-                    . ${VENV_ACTIVATE}
-                    pip install --upgrade pip
-                    pip install -r requirements.txt
+                rsync -av --delete \
+                  --no-owner \
+                  --no-group \
+                  --no-perms \
+                  --omit-dir-times \
+                  --exclude '.git/' \
+                  --exclude '.env' \
+                  --exclude 'env/' \
+                  --exclude '__pycache__/' \
+                  --exclude '*.log' \
+                  --exclude '.pytest_cache/' \
+                  ${WORKSPACE}/ \
+                  ${WORK_DIR}/
                 '''
             }
         }
 
-        stage('Run Tests') {
+        stage('Install Dependencies') {
             steps {
-                echo 'Running tests...'
                 sh '''
-                    . ${VENV_ACTIVATE}
-                    # Uncomment if you have pytest configured
-                    # pytest tests/
-                    echo "Tests completed (configure pytest as needed)"
+                ${WORK_DIR}/env/bin/pip install -r ${WORK_DIR}/requirements.txt
                 '''
             }
         }
 
-        stage('Deploy') {
+        stage('Restart Backend Service') {
             steps {
-                echo 'Starting FastAPI application...'
                 sh '''
-                    . ${VENV_ACTIVATE}
-                    # Kill any existing process on port 8000
-                    lsof -ti :${PORT} | xargs kill -9 2>/dev/null || true
-                    sleep 2
-                    
-                    # Start the application
-                    nohup uvicorn app.main:app \
-                        --host ${HOST} \
-                        --port ${PORT} \
-                        --log-level info \
-                        > ${WORKSPACE}/app-${BUILD_NUMBER}.log 2>&1 &
-                    
-                    # Give it time to start
-                    sleep 3
-                    
-                    # Check if it started successfully
-                    if lsof -Pi :${PORT} -sTCP:LISTEN -t >/dev/null ; then
-                        echo "Application successfully started on port ${PORT}"
-                    else
-                        echo "Failed to start application"
-                        cat ${WORKSPACE}/app-${BUILD_NUMBER}.log
-                        exit 1
-                    fi
+                sudo systemctl restart central_server
                 '''
             }
         }
@@ -76,23 +45,10 @@ pipeline {
 
     post {
         success {
-            echo 'Pipeline executed successfully!'
-            sh '''
-                . ${VENV_ACTIVATE}
-                echo "Application running on http://0.0.0.0:${PORT}"
-                echo "API docs available at http://0.0.0.0:${PORT}/docs"
-            '''
+            echo '✅ Deployment Successful'
         }
         failure {
-            echo 'Pipeline failed!'
-            sh '''
-                echo "=== Recent logs ==="
-                tail -50 ${WORKSPACE}/app-${BUILD_NUMBER}.log 2>/dev/null || echo "No logs available"
-            '''
-        }
-        always {
-            echo 'Cleaning up workspace...'
-            cleanWs()
+            echo '❌ Deployment Failed'
         }
     }
 }
