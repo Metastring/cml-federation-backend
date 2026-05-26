@@ -37,10 +37,14 @@ app.include_router(ontology.router)
 app.include_router(ontology.biodiversity_router)
 
 # Participant API endpoints
+CPMP_BOTANICAL_SEARCH_URL = "https://cpmp.tdu.edu.in/api/species/search/v2"
+# Federated response key for CPMP species search (API body key is also "keyword").
+CPMP_BOTANICAL_FEDERATED_FIELD = "keyword"
+
 PARTICIPANTS = {
     "Kew Plant Database": "http://134.209.145.106:8000/search",
-    "Citizens’ Portal of Medicinal Plants": "http://139.59.84.243:8050/search",
-    "CPMP Botanical Source": "https://cpmp.tdu.edu.in/api/species/search/v2",
+    "Citizens’ Portal of Medicinal Plants": CPMP_BOTANICAL_SEARCH_URL,
+    "CPMP Botanical Source": CPMP_BOTANICAL_SEARCH_URL,
     "CPMP Drug Source": "http://139.59.84.243:9087/search/search/drugname",
     "Traded Medicinal Plants of India (TMPI)": "https://tradedmedicinalplants.org/kew/webapi/advance/search",
     "Ayurahaar – The Ahara & Nutrition Portal": "https://ayurahaar.org/FoodType/webapi/ingredient/ingredient-property-list",
@@ -145,6 +149,93 @@ def _normalize_dataset_name(name: str) -> str:
     return name.strip().lower().replace("’", "'")
 
 
+def _is_cpmp_botanical_participant(participant_name: str, url: str) -> bool:
+    """True when the dataset uses the CPMP species search v2 API.
+
+    That API only accepts a ``keyword`` in the JSON body (not field names
+    like ``scientific_name``). Match by URL or by dataset title so minor
+    naming differences from the catalog still route correctly.
+    """
+
+    norm = _normalize_dataset_name(participant_name)
+    if "cpmp botanical" in norm and "drug" not in norm:
+        return True
+    if "citizens" in norm and "portal" in norm:
+        return True
+
+    url_lower = (url or "").strip().lower()
+    return (
+        CPMP_BOTANICAL_SEARCH_URL.lower() in url_lower
+        or "cpmp.tdu.edu.in/api/species/search" in url_lower
+        or "139.59.84.243:9088/cml/search" in url_lower
+    )
+
+
+def _cpmp_botanical_search_payload(query: str) -> dict:
+    """Build the CPMP species search v2 POST body (keyword-only search)."""
+
+    return {
+        "keyword": query or "",
+        "page": "1",
+        "size": "25",
+        "taxon_status": ["Accepted"],
+    }
+
+
+def _resolve_participant_url(
+    dataset_name: str, normalized_participants: dict[str, str]
+) -> str | None:
+    """Resolve a dataset title to its participant search URL."""
+
+    url = normalized_participants.get(_normalize_dataset_name(dataset_name))
+    if url:
+        return url
+    if _is_cpmp_botanical_participant(dataset_name, ""):
+        return CPMP_BOTANICAL_SEARCH_URL
+    return None
+
+
+async def _fetch_cpmp_botanical_source(
+    client,
+    participant_name: str,
+    url: str,
+    field: str,
+    query: str,
+) -> dict:
+    """POST to CPMP species search v2 using ``keyword`` only."""
+
+    payload = _cpmp_botanical_search_payload(query)
+    response = await client.post(url, json=payload)
+    response.raise_for_status()
+    data = response.json() or {}
+
+    raw_items = data.get("searchResults", []) or []
+    normalised_items = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+
+        normalised_items.append({
+            "taxon_id": item.get("taxonId"),
+            "taxon_name": item.get("taxonName"),
+            "common_names": item.get("commonNames"),
+        })
+
+    # ``field`` shapes the federated response only; it is never sent to CPMP.
+    if field and field.strip():
+        normalised_items = [
+            _project_biodiversity_result(row, field)
+            for row in normalised_items
+        ]
+
+    return {
+        "participant_name": participant_name,
+        "field": field,
+        "api_url": url,
+        "results": normalised_items,
+    }
+
+
 def _canonical_field_name(field: str) -> str:
     """Return the canonical field name used in responses.
 
@@ -212,47 +303,11 @@ async def fetch_from_participant(client, participant_name: str, url: str, field:
                 "results": normalised_items,
             }
 
-        # Special handling for CPMP Botanical Source which exposes a
-        # JSON POST API at /api/species/search/v2.
-        if "cpmp.tdu.edu.in/api/species/search/v2" in url or "139.59.84.243:9088/cml/search" in url:
-            payload = {
-                "keyword": query or "",
-                "page": "1",
-                "size": "25",
-                "taxon_status": ["Accepted"],
-            }
-
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
-            data = response.json() or {}
-
-            raw_items = data.get("searchResults", []) or []
-            normalised_items = []
-            for item in raw_items:
-                if not isinstance(item, dict):
-                    continue
-
-                normalised_items.append({
-                    "taxon_id": item.get("taxonId"),
-                    "taxon_name": item.get("taxonName"),
-                    "common_names": item.get("commonNames"),
-                })
-
-            # If a specific field is requested, project results down
-            # to ID columns plus that field, consistent with other
-            # biodiversity datasets.
-            if field and field.strip():
-                normalised_items = [
-                    _project_biodiversity_result(row, field)
-                    for row in normalised_items
-                ]
-
-            return {
-                "participant_name": participant_name,
-                "field": field,
-                "api_url": url,
-                "results": normalised_items,
-            }
+        # CPMP species search v2 — always POST { keyword, page, size, taxon_status }.
+        if _is_cpmp_botanical_participant(participant_name, url):
+            return await _fetch_cpmp_botanical_source(
+                client, participant_name, url, field, query
+            )
 
         # Special handling for Ayurahaar – The Ahara & Nutrition Portal
         # When the federated field is "recipe", we search the recipe list.
@@ -502,6 +557,13 @@ async def fetch_from_participant(client, participant_name: str, url: str, field:
                 "results": normalised_items,
             }
 
+        # Safety net: never send scientific_name (or any field) as a query
+        # param to the CPMP species API — it only accepts keyword in JSON.
+        if _is_cpmp_botanical_participant(participant_name, url):
+            return await _fetch_cpmp_botanical_source(
+                client, participant_name, url, field, query
+            )
+
         # Default behaviour for participants that follow the common contract
         # If no specific field is provided (or a wildcard like * / all),
         # omit the field parameter so the participant can search globally.
@@ -606,8 +668,7 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
     invalid_datasets: list[str] = []
 
     for ds in payload.dataset:
-        norm = _normalize_dataset_name(ds)
-        url = normalized_participants.get(norm)
+        url = _resolve_participant_url(ds, normalized_participants)
         if url:
             resolved_participants.append((ds, url))
         else:
@@ -644,12 +705,34 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
     async with httpx.AsyncClient(timeout=10.0) as client:
         # If no fields are provided, perform a single "search everywhere" call
         # per dataset by passing an empty field string.
+        #
+        # CPMP species search v2 only accepts ``keyword`` in the JSON body —
+        # never scientific_name or other field names. One POST per CPMP dataset
+        # regardless of how many fields the UI selected.
         if payload.fields:
-            tasks = [
-                fetch_from_participant(client, participant_name, url, field, payload.search_text)
-                for (participant_name, url) in resolved_participants
-                for field in payload.fields
-            ]
+            tasks = []
+            for participant_name, url in resolved_participants:
+                if _is_cpmp_botanical_participant(participant_name, url):
+                    tasks.append(
+                        fetch_from_participant(
+                            client,
+                            participant_name,
+                            url,
+                            "",
+                            payload.search_text,
+                        )
+                    )
+                else:
+                    for field in payload.fields:
+                        tasks.append(
+                            fetch_from_participant(
+                                client,
+                                participant_name,
+                                url,
+                                field,
+                                payload.search_text,
+                            )
+                        )
         else:
             tasks = [
                 fetch_from_participant(client, participant_name, url, "", payload.search_text)
@@ -667,7 +750,10 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
                 "field_results": {},
                 "is_occurance_available": occurrence_flags.get(pname, False),
             }
-        response_field = _canonical_field_name(item["field"])
+        if _is_cpmp_botanical_participant(pname, item["api_url"]):
+            response_field = CPMP_BOTANICAL_FEDERATED_FIELD
+        else:
+            response_field = _canonical_field_name(item["field"])
         results[pname]["field_results"][response_field] = {
             "results": item["results"],
             "error": item.get("error")
@@ -678,7 +764,15 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
         "dataset": payload.dataset,
         "valid_datasets": [name for (name, _url) in resolved_participants],
         "invalid_datasets": invalid_datasets,   # <--- include info for debugging
-        "fields": [_canonical_field_name(f) for f in payload.fields],
+        "fields": (
+            [CPMP_BOTANICAL_FEDERATED_FIELD]
+            if payload.fields
+            and all(
+                _is_cpmp_botanical_participant(name, url)
+                for (name, url) in resolved_participants
+            )
+            else [_canonical_field_name(f) for f in payload.fields]
+        ),
         "search_text": payload.search_text,
         "results": results
     }

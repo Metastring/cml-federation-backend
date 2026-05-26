@@ -142,6 +142,65 @@ def test_fetch_from_participant_cpmp_botanical_source_uses_keyword_payload():
     assert result["results"][0]["scientific_name"] == "abelia chinensis r.br."
 
 
+def test_fetch_from_participant_cpmp_botanical_source_title():
+    """Dataset 'CPMP Botanical Source' must POST keyword only."""
+
+    import main as main
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"searchResults": []}
+
+    class DummyClient:
+        def __init__(self):
+            self.last_request = None
+
+        async def post(self, url, json=None):
+            self.last_request = {"url": url, "json": json}
+            return DummyResponse()
+
+    client = DummyClient()
+    asyncio.run(
+        main.fetch_from_participant(
+            client,
+            "CPMP Botanical Source",
+            main.CPMP_BOTANICAL_SEARCH_URL,
+            "scientific_name",
+            "neem",
+        )
+    )
+
+    assert client.last_request is not None
+    assert "keyword" in client.last_request["json"]
+    assert client.last_request["json"]["keyword"] == "neem"
+    assert "scientific_name" not in client.last_request["json"]
+    assert "field" not in client.last_request["json"]
+
+
+def test_is_cpmp_botanical_participant_matches_catalog_title():
+    import main as main
+
+    assert main._is_cpmp_botanical_participant("CPMP Botanical Source", "")
+    assert main._is_cpmp_botanical_participant("Citizens' Portal of Medicinal Plants", "")
+    assert not main._is_cpmp_botanical_participant("CPMP Drug Source", "")
+
+
+def test_cpmp_botanical_payload_uses_keyword_not_field_name():
+    import main as main
+
+    payload = main._cpmp_botanical_search_payload("abel")
+    assert payload == {
+        "keyword": "abel",
+        "page": "1",
+        "size": "25",
+        "taxon_status": ["Accepted"],
+    }
+    assert "scientific_name" not in payload
+
+
 def test_local_name_extracts_fragment_or_last_path_segment():
     """_local_name should prefer fragment then last path segment for URIs."""
 
