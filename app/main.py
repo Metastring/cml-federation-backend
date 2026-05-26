@@ -40,7 +40,7 @@ app.include_router(ontology.biodiversity_router)
 PARTICIPANTS = {
     "Kew Plant Database": "http://134.209.145.106:8000/search",
     "Citizens’ Portal of Medicinal Plants": "http://139.59.84.243:8050/search",
-    "CPMP Botanical Source": "http://139.59.84.243:9088/cml/search",
+    "CPMP Botanical Source": "https://cpmp.tdu.edu.in/api/species/search/v2",
     "CPMP Drug Source": "http://139.59.84.243:9087/search/search/drugname",
     "Traded Medicinal Plants of India (TMPI)": "https://tradedmedicinalplants.org/kew/webapi/advance/search",
     "Ayurahaar – The Ahara & Nutrition Portal": "https://ayurahaar.org/FoodType/webapi/ingredient/ingredient-property-list",
@@ -212,33 +212,21 @@ async def fetch_from_participant(client, participant_name: str, url: str, field:
                 "results": normalised_items,
             }
 
-        # Special handling for CPMP Botanical Source which now exposes
-        # a GET API for species search.
-        if "139.59.84.243:9088/cml/search" in url:
-            # Map our federated field to the CPMP "search_parameter".
-            # The CPMP API only accepts "scientific_name" or "common_name".
-            field_norm = (field or "").strip().lower()
-            if field_norm in {"scientific_name", "taxon_name"}:
-                search_parameter = "scientific_name"
-            elif field_norm in {"vernacular_name_common_names", "common_name", "common_names"}:
-                search_parameter = "common_name"
-            else:
-                # Default to common_name when the requested field
-                # does not match one of the known scientific/common
-                # name identifiers.
-                search_parameter = "common_name"
-
-            params = {
-                "search_parameter": search_parameter,
-                "search_text": query or "",
+        # Special handling for CPMP Botanical Source which exposes a
+        # JSON POST API at /api/species/search/v2.
+        if "cpmp.tdu.edu.in/api/species/search/v2" in url or "139.59.84.243:9088/cml/search" in url:
+            payload = {
+                "keyword": query or "",
+                "page": "1",
+                "size": "25",
+                "taxon_status": ["Accepted"],
             }
 
-            response = await client.get(url, params=params)
+            response = await client.post(url, json=payload)
             response.raise_for_status()
-            data = response.json() or []
+            data = response.json() or {}
 
-            # New CPMP API returns a top-level list of taxa.
-            raw_items = data if isinstance(data, list) else data.get("results", [])
+            raw_items = data.get("searchResults", []) or []
             normalised_items = []
             for item in raw_items:
                 if not isinstance(item, dict):

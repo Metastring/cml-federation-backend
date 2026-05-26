@@ -77,7 +77,7 @@ def test_participants_use_default_urls_when_env_not_set(monkeypatch):
     import main as main
 
     assert main.PARTICIPANTS["Kew Plant Database"] == "http://134.209.145.106:8000/search"
-    assert main.PARTICIPANTS["Citizens’ Portal of Medicinal Plants"] == "http://139.59.84.243:8050/search"
+    assert main.PARTICIPANTS["Citizens’ Portal of Medicinal Plants"] == "https://cpmp.tdu.edu.in/api/species/search/v2"
     assert main.PARTICIPANTS["CPMP Botanical Source"] == "https://cpmp.tdu.edu.in/api/species/search/v2"
     assert main.PARTICIPANTS["CPMP Drug Source"] == "http://139.59.84.243:9087/search/search/drugname"
 
