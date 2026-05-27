@@ -215,10 +215,14 @@ async def _fetch_cpmp_botanical_source(
         if not isinstance(item, dict):
             continue
 
+        common_names = item.get("commonNames")
+        if isinstance(common_names, list):
+            common_names = ", ".join([c for c in common_names if c]) or None
+
         normalised_items.append({
             "taxon_id": item.get("taxonId"),
-            "taxon_name": item.get("taxonName"),
-            "common_names": item.get("commonNames"),
+            "scientific_name": item.get("taxonName"),
+            "common_names": common_names,
         })
 
     # ``field`` shapes the federated response only; it is never sent to CPMP.
