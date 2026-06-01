@@ -842,7 +842,7 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Load all registered map tables with their display names
+        # Load all registered map tables
         try:
             cursor.execute(
                 f"SELECT DISTINCT layer_name "
@@ -870,7 +870,19 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
         except Exception:
             pass
 
-        # Reverse map: normalised display_name → table_name for name matching
+        # field_name (lower) → ontology display label for matched_fields names
+        field_display: dict[str, str] = {}
+        try:
+            cursor.execute(
+                "SELECT LOWER(field_name) AS fn, ontology_mapping_to_display "
+                "FROM dataset_mapping WHERE ontology_mapping_to_display IS NOT NULL"
+            )
+            for row in cursor.fetchall():
+                if row["fn"] and row["ontology_mapping_to_display"]:
+                    field_display[row["fn"]] = row["ontology_mapping_to_display"]
+        except Exception:
+            pass
+
         norm_display_to_table: dict[str, str] = {
             _normalize_dataset_name(dn): tn
             for tn, dn in display_names.items()
@@ -879,7 +891,6 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
         for requested in requested_datasets:
             req_norm = _normalize_dataset_name(requested)
 
-            # Match by exact table name, then by display name
             if req_norm in [_normalize_dataset_name(t) for t in all_table_names]:
                 table_name = next(
                     t for t in all_table_names
@@ -888,11 +899,11 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
             elif req_norm in norm_display_to_table:
                 table_name = norm_display_to_table[req_norm]
             else:
-                continue  # not a map dataset, skip
+                continue  # not a map dataset
 
             display_name = display_names.get(table_name, table_name)
 
-            # Get text-like columns, excluding geometry/system columns
+            # Get text-like columns
             cursor.execute(
                 """
                 SELECT column_name
@@ -910,29 +921,55 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
             text_columns = [row["column_name"] for row in cursor.fetchall()]
 
             if not text_columns:
-                results.append(
-                    {"name": table_name, "display_name": display_name, "source": "map", "available": False}
-                )
+                results.append({
+                    "dataset_name": table_name,
+                    "display_name": display_name,
+                    "available": False,
+                    "count": 0,
+                    "matched_fields": [],
+                    "is_occurance_available": True,
+                })
                 continue
 
-            # ILIKE across all text columns; LIMIT 1 for speed
+            like_term = f"%{search_text.lower()}%"
             conditions = " OR ".join(
                 [f'LOWER(t."{col}") LIKE %(term)s' for col in text_columns]
             )
-            like_term = f"%{search_text.lower()}%"
+
+            # Single query: row count + per-column match flag via MAX(CASE...)
+            col_cases = ", ".join(
+                f'MAX(CASE WHEN LOWER(t."{col}") LIKE %(term)s THEN 1 ELSE 0 END) AS "m{i}"'
+                for i, col in enumerate(text_columns)
+            )
             try:
                 cursor.execute(
-                    f'SELECT 1 FROM {MAP_DB_SCHEMA}."{table_name}" t '
-                    f"WHERE {conditions} LIMIT 1",
+                    f'SELECT COUNT(*) AS match_count, {col_cases} '
+                    f'FROM {MAP_DB_SCHEMA}."{table_name}" t WHERE {conditions}',
                     {"term": like_term},
                 )
-                available = cursor.fetchone() is not None
+                row = cursor.fetchone()
+                count = int(row["match_count"]) if row else 0
+                matched_cols = [
+                    text_columns[i]
+                    for i in range(len(text_columns))
+                    if row and row.get(f"m{i}")
+                ]
             except Exception:
-                available = False
+                count = 0
+                matched_cols = []
 
-            results.append(
-                {"name": table_name, "display_name": display_name, "source": "map", "available": available}
-            )
+            matched_fields = [
+                field_display.get(col.lower(), col) for col in matched_cols
+            ]
+
+            results.append({
+                "dataset_name": table_name,
+                "display_name": display_name,
+                "available": count > 0,
+                "count": count,
+                "matched_fields": matched_fields,
+                "is_occurance_available": True,
+            })
     finally:
         conn.close()
 
@@ -945,12 +982,13 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
     Availability check for the datasets listed in the request.
 
     Accepts the same body as /federated-search (category, dataset, fields,
-    search_text). For each dataset in the list:
-    - If it resolves to a federation participant, the external API is queried
-      and the dataset is marked available when at least one result is returned.
-    - If it matches a map DB table (by table name or display name), the table's
-      text columns are searched directly in the DB.
-    - Datasets that exist in both sources are checked in both places.
+    search_text). For each dataset:
+    - Federation participants are queried via their APIs; count = number of
+      results returned; matched_fields = fields in the response that contain
+      the search text.
+    - Map DB tables are searched directly; count = matching row count;
+      matched_fields = column display labels where the term was found;
+      is_occurance_available is always true (it's a map dataset).
     """
     if "biodiversity" not in [c.lower() for c in payload.category]:
         raise HTTPException(status_code=400, detail="At least one category must be 'biodiversity'.")
@@ -964,8 +1002,7 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
         for name, url in PARTICIPANTS.items()
     }
 
-    # Resolve requested datasets to federation participants
-    resolved: list[tuple[str, str]] = []  # (display_name, url)
+    resolved: list[tuple[str, str]] = []
     for ds in payload.dataset:
         entry = normalized_participants.get(_normalize_dataset_name(ds))
         if entry:
@@ -1006,18 +1043,34 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
         finally:
             conn.close()
 
+        search_lower = search_text.lower()
         for item in responses:
             pname = item["participant_name"]
-            dataset_results.append(
-                {
-                    "name": pname,
-                    "source": "federation",
-                    "available": bool(item.get("results")),
-                    "is_occurance_available": occurrence_flags.get(pname, False),
-                }
-            )
+            results_list = item.get("results") or []
+            count = len(results_list)
 
-    # --- Map datasets: only check tables matching the requested dataset names ---
+            # Identify which fields in the returned records contain the search text
+            matched_fields_set: set[str] = set()
+            for result in results_list:
+                if not isinstance(result, dict):
+                    continue
+                for key, value in result.items():
+                    k_lower = key.lower()
+                    if k_lower.endswith("_id") or k_lower == "id":
+                        continue
+                    if value and search_lower in str(value).lower():
+                        matched_fields_set.add(key)
+
+            dataset_results.append({
+                "dataset_name": pname,
+                "source": "federation",
+                "available": count > 0,
+                "count": count,
+                "matched_fields": sorted(matched_fields_set),
+                "is_occurance_available": occurrence_flags.get(pname, False),
+            })
+
+    # --- Map datasets ---
     map_results = _get_map_datasets_availability(search_text, payload.dataset)
     dataset_results.extend(map_results)
 
