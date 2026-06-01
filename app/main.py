@@ -1063,7 +1063,7 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
 
             dataset_results.append({
                 "dataset_name": pname,
-                "source": "federation",
+                "display_name": pname,
                 "available": count > 0,
                 "count": count,
                 "matched_fields": sorted(matched_fields_set),
