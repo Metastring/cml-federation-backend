@@ -831,35 +831,29 @@ def get_platform_statistics():
         conn.close()
 
 
-class PreFederatedSearchRequest(BaseModel):
-    search_text: str
-
-
-def _get_map_datasets_availability(search_text: str) -> list[dict]:
+def _get_map_datasets_availability(search_text: str, requested_datasets: list[str]) -> list[dict]:
     """
-    Discover all map dataset tables via upload_logs, look up human-readable
-    names from the metadata table, then check each table's text columns for
-    rows matching search_text (case-insensitive LIKE).
+    For each dataset name in requested_datasets, check if a matching map table
+    exists (matched by table name or display name) and whether search_text
+    appears in any of its text columns.
     """
     results = []
     conn = get_connection()
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        # Discover map dataset table names from upload_logs
+        # Load all registered map tables with their display names
         try:
             cursor.execute(
                 f"SELECT DISTINCT layer_name "
                 f"FROM {MAP_DB_SCHEMA}.upload_logs "
-                "WHERE layer_name IS NOT NULL AND layer_name <> '' "
-                "ORDER BY layer_name"
+                "WHERE layer_name IS NOT NULL AND layer_name <> ''"
             )
-            table_names: list[str] = [row["layer_name"] for row in cursor.fetchall()]
+            all_table_names: list[str] = [row["layer_name"] for row in cursor.fetchall()]
         except Exception:
-            table_names = []
+            all_table_names = []
 
-        # Build table_name → display_name map from metadata.geoserver_name
-        # geoserver_name is stored as "workspace:table_name"
+        # Build table_name → display_name from metadata.geoserver_name
         display_names: dict[str, str] = {}
         try:
             cursor.execute(
@@ -876,10 +870,29 @@ def _get_map_datasets_availability(search_text: str) -> list[dict]:
         except Exception:
             pass
 
-        for table_name in table_names:
+        # Reverse map: normalised display_name → table_name for name matching
+        norm_display_to_table: dict[str, str] = {
+            _normalize_dataset_name(dn): tn
+            for tn, dn in display_names.items()
+        }
+
+        for requested in requested_datasets:
+            req_norm = _normalize_dataset_name(requested)
+
+            # Match by exact table name, then by display name
+            if req_norm in [_normalize_dataset_name(t) for t in all_table_names]:
+                table_name = next(
+                    t for t in all_table_names
+                    if _normalize_dataset_name(t) == req_norm
+                )
+            elif req_norm in norm_display_to_table:
+                table_name = norm_display_to_table[req_norm]
+            else:
+                continue  # not a map dataset, skip
+
             display_name = display_names.get(table_name, table_name)
 
-            # Get text-like columns for this table, excluding geometry/system columns
+            # Get text-like columns, excluding geometry/system columns
             cursor.execute(
                 """
                 SELECT column_name
@@ -898,16 +911,11 @@ def _get_map_datasets_availability(search_text: str) -> list[dict]:
 
             if not text_columns:
                 results.append(
-                    {
-                        "name": table_name,
-                        "display_name": display_name,
-                        "source": "map",
-                        "available": False,
-                    }
+                    {"name": table_name, "display_name": display_name, "source": "map", "available": False}
                 )
                 continue
 
-            # Build an ILIKE check across all text columns; LIMIT 1 for speed
+            # ILIKE across all text columns; LIMIT 1 for speed
             conditions = " OR ".join(
                 [f'LOWER(t."{col}") LIKE %(term)s' for col in text_columns]
             )
@@ -923,12 +931,7 @@ def _get_map_datasets_availability(search_text: str) -> list[dict]:
                 available = False
 
             results.append(
-                {
-                    "name": table_name,
-                    "display_name": display_name,
-                    "source": "map",
-                    "available": available,
-                }
+                {"name": table_name, "display_name": display_name, "source": "map", "available": available}
             )
     finally:
         conn.close()
@@ -937,68 +940,85 @@ def _get_map_datasets_availability(search_text: str) -> list[dict]:
 
 
 @app.post("/pre-federated-search")
-async def pre_federated_search(payload: PreFederatedSearchRequest = Body(...)):
+async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
     """
-    Availability check across all datasets (federation + map) for a search term.
+    Availability check for the datasets listed in the request.
 
-    For federation datasets the same external APIs used by /federated-search are
-    queried; a dataset is marked available when at least one result is returned.
-    For map datasets the DB tables registered via map_module_backend are searched
-    directly on text columns, so results reflect what is actually in the DB.
-
-    Intended for a frontend "pre-search" step that lists which datasets contain
-    the term before the user decides which ones to query in full.
+    Accepts the same body as /federated-search (category, dataset, fields,
+    search_text). For each dataset in the list:
+    - If it resolves to a federation participant, the external API is queried
+      and the dataset is marked available when at least one result is returned.
+    - If it matches a map DB table (by table name or display name), the table's
+      text columns are searched directly in the DB.
+    - Datasets that exist in both sources are checked in both places.
     """
+    if "biodiversity" not in [c.lower() for c in payload.category]:
+        raise HTTPException(status_code=400, detail="At least one category must be 'biodiversity'.")
+
     search_text = payload.search_text.strip()
     if not search_text:
         raise HTTPException(status_code=400, detail="search_text must not be empty.")
 
+    normalized_participants = {
+        _normalize_dataset_name(name): (name, url)
+        for name, url in PARTICIPANTS.items()
+    }
+
+    # Resolve requested datasets to federation participants
+    resolved: list[tuple[str, str]] = []  # (display_name, url)
+    for ds in payload.dataset:
+        entry = normalized_participants.get(_normalize_dataset_name(ds))
+        if entry:
+            resolved.append(entry)
+        elif _is_cpmp_botanical_participant(ds, ""):
+            resolved.append((ds, CPMP_BOTANICAL_SEARCH_URL))
+
     dataset_results: list[dict] = []
 
     # --- Federation datasets ---
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        tasks = [
-            fetch_from_participant(client, name, url, "", search_text)
-            for name, url in PARTICIPANTS.items()
-        ]
-        responses = await asyncio.gather(*tasks)
+    if resolved:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            tasks = [
+                fetch_from_participant(client, name, url, "", search_text)
+                for name, url in resolved
+            ]
+            responses = await asyncio.gather(*tasks)
 
-    # Fetch is_occurance_available flag for every federation participant
-    occurrence_flags: dict[str, bool] = {}
-    conn = get_connection()
-    try:
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-        for participant_name in PARTICIPANTS:
-            cursor.execute(
-                """
-                SELECT is_occurance_available
-                FROM dataset_master
-                WHERE LOWER(title) = LOWER(%s)
-                LIMIT 1;
-                """,
-                (participant_name,),
+        occurrence_flags: dict[str, bool] = {}
+        conn = get_connection()
+        try:
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            for name, _ in resolved:
+                cursor.execute(
+                    """
+                    SELECT is_occurance_available
+                    FROM dataset_master
+                    WHERE LOWER(title) = LOWER(%s)
+                    LIMIT 1;
+                    """,
+                    (name,),
+                )
+                row = cursor.fetchone()
+                if row is not None and row.get("is_occurance_available") is not None:
+                    occurrence_flags[name] = bool(row["is_occurance_available"])
+                else:
+                    occurrence_flags[name] = False
+        finally:
+            conn.close()
+
+        for item in responses:
+            pname = item["participant_name"]
+            dataset_results.append(
+                {
+                    "name": pname,
+                    "source": "federation",
+                    "available": bool(item.get("results")),
+                    "is_occurance_available": occurrence_flags.get(pname, False),
+                }
             )
-            row = cursor.fetchone()
-            if row is not None and row.get("is_occurance_available") is not None:
-                occurrence_flags[participant_name] = bool(row["is_occurance_available"])
-            else:
-                occurrence_flags[participant_name] = False
-    finally:
-        conn.close()
 
-    for item in responses:
-        pname = item["participant_name"]
-        dataset_results.append(
-            {
-                "name": pname,
-                "source": "federation",
-                "available": bool(item.get("results")),
-                "is_occurance_available": occurrence_flags.get(pname, False),
-            }
-        )
-
-    # --- Map datasets: search DB tables directly ---
-    map_results = _get_map_datasets_availability(search_text)
+    # --- Map datasets: only check tables matching the requested dataset names ---
+    map_results = _get_map_datasets_availability(search_text, payload.dataset)
     dataset_results.extend(map_results)
 
     return {
