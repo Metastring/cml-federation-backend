@@ -5,6 +5,7 @@ from pydantic import BaseModel
 import httpx
 import asyncio
 import json
+import os
 
 # Include other internal modules
 from app.db import get_connection
@@ -43,13 +44,16 @@ CPMP_BOTANICAL_FEDERATED_FIELD = "keyword"
 
 PARTICIPANTS = {
     "Kew Plant Database": "http://134.209.145.106:8000/search",
-    "Citizens’ Portal of Medicinal Plants": CPMP_BOTANICAL_SEARCH_URL,
     "CPMP Botanical Source": CPMP_BOTANICAL_SEARCH_URL,
     "CPMP Drug Source": "http://139.59.84.243:9087/search/search/drugname",
     "Traded Medicinal Plants of India (TMPI)": "https://tradedmedicinalplants.org/kew/webapi/advance/search",
     "Ayurahaar – The Ahara & Nutrition Portal": "https://ayurahaar.org/FoodType/webapi/ingredient/ingredient-property-list",
     "Rasashastra: A Database of Metals and Minerals used in Ayurveda": "https://rasashastra.tdu.edu.in/mm_api/advanced/search",
 }
+
+# Schema that holds the map module's dataset tables (upload_logs, metadata, and
+# the dynamic per-dataset tables registered via map_module_backend).
+MAP_DB_SCHEMA = os.getenv("MAP_DB_SCHEMA", "public")
 
 
 # Internal-to-TMPI field mapping
@@ -159,8 +163,6 @@ def _is_cpmp_botanical_participant(participant_name: str, url: str) -> bool:
 
     norm = _normalize_dataset_name(participant_name)
     if "cpmp botanical" in norm and "drug" not in norm:
-        return True
-    if "citizens" in norm and "portal" in norm:
         return True
 
     url_lower = (url or "").strip().lower()
@@ -584,8 +586,6 @@ async def fetch_from_participant(client, participant_name: str, url: str, field:
         # columns plus that field.
         biodiversity_participants = {
             "Kew Plant Database",
-            "Citizens’ Portal of Medicinal Plants",
-            "Citizens' Portal of Medicinal Plants",
         }
 
         if field and field.strip() and participant_name in biodiversity_participants:
@@ -829,6 +829,182 @@ def get_platform_statistics():
         }
     finally:
         conn.close()
+
+
+class PreFederatedSearchRequest(BaseModel):
+    search_text: str
+
+
+def _get_map_datasets_availability(search_text: str) -> list[dict]:
+    """
+    Discover all map dataset tables via upload_logs, look up human-readable
+    names from the metadata table, then check each table's text columns for
+    rows matching search_text (case-insensitive LIKE).
+    """
+    results = []
+    conn = get_connection()
+    try:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Discover map dataset table names from upload_logs
+        try:
+            cursor.execute(
+                f"SELECT DISTINCT layer_name "
+                f"FROM {MAP_DB_SCHEMA}.upload_logs "
+                "WHERE layer_name IS NOT NULL AND layer_name <> '' "
+                "ORDER BY layer_name"
+            )
+            table_names: list[str] = [row["layer_name"] for row in cursor.fetchall()]
+        except Exception:
+            table_names = []
+
+        # Build table_name → display_name map from metadata.geoserver_name
+        # geoserver_name is stored as "workspace:table_name"
+        display_names: dict[str, str] = {}
+        try:
+            cursor.execute(
+                f"SELECT geoserver_name, name_of_dataset "
+                f"FROM {MAP_DB_SCHEMA}.metadata "
+                "WHERE geoserver_name IS NOT NULL"
+            )
+            for row in cursor.fetchall():
+                gn = (row["geoserver_name"] or "").strip()
+                parts = gn.split(":", 1)
+                table_key = parts[1] if len(parts) == 2 else gn
+                if table_key and row["name_of_dataset"]:
+                    display_names[table_key] = row["name_of_dataset"]
+        except Exception:
+            pass
+
+        for table_name in table_names:
+            display_name = display_names.get(table_name, table_name)
+
+            # Get text-like columns for this table, excluding geometry/system columns
+            cursor.execute(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = %s
+                  AND table_name = %s
+                  AND data_type IN (
+                      'character varying', 'text', 'varchar', 'character', 'name'
+                  )
+                  AND column_name NOT IN ('dataset_id', 'geom')
+                ORDER BY ordinal_position
+                """,
+                (MAP_DB_SCHEMA, table_name),
+            )
+            text_columns = [row["column_name"] for row in cursor.fetchall()]
+
+            if not text_columns:
+                results.append(
+                    {
+                        "name": table_name,
+                        "display_name": display_name,
+                        "source": "map",
+                        "available": False,
+                    }
+                )
+                continue
+
+            # Build an ILIKE check across all text columns; LIMIT 1 for speed
+            conditions = " OR ".join(
+                [f'LOWER(t."{col}") LIKE %(term)s' for col in text_columns]
+            )
+            like_term = f"%{search_text.lower()}%"
+            try:
+                cursor.execute(
+                    f'SELECT 1 FROM {MAP_DB_SCHEMA}."{table_name}" t '
+                    f"WHERE {conditions} LIMIT 1",
+                    {"term": like_term},
+                )
+                available = cursor.fetchone() is not None
+            except Exception:
+                available = False
+
+            results.append(
+                {
+                    "name": table_name,
+                    "display_name": display_name,
+                    "source": "map",
+                    "available": available,
+                }
+            )
+    finally:
+        conn.close()
+
+    return results
+
+
+@app.post("/pre-federated-search")
+async def pre_federated_search(payload: PreFederatedSearchRequest = Body(...)):
+    """
+    Availability check across all datasets (federation + map) for a search term.
+
+    For federation datasets the same external APIs used by /federated-search are
+    queried; a dataset is marked available when at least one result is returned.
+    For map datasets the DB tables registered via map_module_backend are searched
+    directly on text columns, so results reflect what is actually in the DB.
+
+    Intended for a frontend "pre-search" step that lists which datasets contain
+    the term before the user decides which ones to query in full.
+    """
+    search_text = payload.search_text.strip()
+    if not search_text:
+        raise HTTPException(status_code=400, detail="search_text must not be empty.")
+
+    dataset_results: list[dict] = []
+
+    # --- Federation datasets ---
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        tasks = [
+            fetch_from_participant(client, name, url, "", search_text)
+            for name, url in PARTICIPANTS.items()
+        ]
+        responses = await asyncio.gather(*tasks)
+
+    # Fetch is_occurance_available flag for every federation participant
+    occurrence_flags: dict[str, bool] = {}
+    conn = get_connection()
+    try:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        for participant_name in PARTICIPANTS:
+            cursor.execute(
+                """
+                SELECT is_occurance_available
+                FROM dataset_master
+                WHERE LOWER(title) = LOWER(%s)
+                LIMIT 1;
+                """,
+                (participant_name,),
+            )
+            row = cursor.fetchone()
+            if row is not None and row.get("is_occurance_available") is not None:
+                occurrence_flags[participant_name] = bool(row["is_occurance_available"])
+            else:
+                occurrence_flags[participant_name] = False
+    finally:
+        conn.close()
+
+    for item in responses:
+        pname = item["participant_name"]
+        dataset_results.append(
+            {
+                "name": pname,
+                "source": "federation",
+                "available": bool(item.get("results")),
+                "is_occurance_available": occurrence_flags.get(pname, False),
+            }
+        )
+
+    # --- Map datasets: search DB tables directly ---
+    map_results = _get_map_datasets_availability(search_text)
+    dataset_results.extend(map_results)
+
+    return {
+        "search_text": search_text,
+        "datasets": dataset_results,
+    }
 
 
 @app.get("/ping")
