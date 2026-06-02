@@ -1,11 +1,12 @@
 
 from fastapi import FastAPI, HTTPException, Body
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 import httpx
 import asyncio
 import json
 import os
+import time
 
 # Include other internal modules
 from app.db import get_connection
@@ -54,6 +55,39 @@ PARTICIPANTS = {
 # Schema that holds the map module's dataset tables (upload_logs, metadata, and
 # the dynamic per-dataset tables registered via map_module_backend).
 MAP_DB_SCHEMA = os.getenv("MAP_DB_SCHEMA", "public")
+
+# ── In-memory result cache for /pre-federated-search ───────────────────────
+_SEARCH_CACHE: dict[tuple, dict] = {}
+_CACHE_TTL: int = int(os.getenv("PRE_SEARCH_CACHE_TTL", "300"))  # seconds (default 5 min)
+
+
+def _make_cache_key(search_text: str, datasets: list[str]) -> tuple:
+    return (
+        search_text.strip().lower(),
+        frozenset(_normalize_dataset_name(d) for d in datasets),
+    )
+
+
+def _get_cached(key: tuple) -> list[dict] | None:
+    entry = _SEARCH_CACHE.get(key)
+    if entry and (time.time() - entry["timestamp"]) < _CACHE_TTL:
+        return entry["datasets"]
+    if entry:
+        del _SEARCH_CACHE[key]
+    return None
+
+
+def _value_contains(value, search_lower: str) -> bool:
+    """Recursively check if search_lower appears anywhere in value."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return search_lower in value.lower()
+    if isinstance(value, (list, tuple)):
+        return any(_value_contains(v, search_lower) for v in value)
+    if isinstance(value, dict):
+        return any(_value_contains(v, search_lower) for v in value.values())
+    return False
 
 
 # Internal-to-TMPI field mapping
@@ -225,6 +259,7 @@ async def _fetch_cpmp_botanical_source(
             "taxon_id": item.get("taxonId"),
             "scientific_name": item.get("taxonName"),
             "common_names": common_names,
+            "matched_with": item.get("matchedWith"),
         })
 
     # ``field`` shapes the federated response only; it is never sent to CPMP.
@@ -922,8 +957,7 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
 
             if not text_columns:
                 results.append({
-                    "dataset_name": table_name,
-                    "display_name": display_name,
+                    "dataset_name": display_name or table_name,
                     "available": False,
                     "count": 0,
                     "matched_fields": [],
@@ -963,8 +997,7 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
             ]
 
             results.append({
-                "dataset_name": table_name,
-                "display_name": display_name,
+                "dataset_name": display_name or table_name,
                 "available": count > 0,
                 "count": count,
                 "matched_fields": matched_fields,
@@ -979,16 +1012,16 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
 @app.post("/pre-federated-search")
 async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
     """
-    Availability check for the datasets listed in the request.
+    Availability check — streams one SSE event per dataset as results arrive.
 
-    Accepts the same body as /federated-search (category, dataset, fields,
-    search_text). For each dataset:
-    - Federation participants are queried via their APIs; count = number of
-      results returned; matched_fields = fields in the response that contain
-      the search text.
-    - Map DB tables are searched directly; count = matching row count;
-      matched_fields = column display labels where the term was found;
-      is_occurance_available is always true (it's a map dataset).
+    Response: text/event-stream
+      Each event:  data: <JSON object with dataset_name, available, count,
+                         matched_fields, is_occurance_available>
+      Final event: event: done
+                   data: {"search_text": "...", "total": N, "cached": bool}
+
+    Cached results (TTL=PRE_SEARCH_CACHE_TTL env var, default 5 min) are
+    streamed immediately without hitting any external API.
     """
     if "biodiversity" not in [c.lower() for c in payload.category]:
         raise HTTPException(status_code=400, detail="At least one category must be 'biodiversity'.")
@@ -997,11 +1030,21 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
     if not search_text:
         raise HTTPException(status_code=400, detail="search_text must not be empty.")
 
+    cache_key = _make_cache_key(search_text, payload.dataset)
+    cached = _get_cached(cache_key)
+
+    if cached is not None:
+        async def _stream_cached():
+            for entry in cached:
+                yield f"data: {json.dumps(entry)}\n\n"
+            yield f"event: done\ndata: {json.dumps({'search_text': search_text, 'total': len(cached), 'cached': True})}\n\n"
+        return StreamingResponse(_stream_cached(), media_type="text/event-stream")
+
+    # --- Resolve federation participants ---
     normalized_participants = {
         _normalize_dataset_name(name): (name, url)
         for name, url in PARTICIPANTS.items()
     }
-
     resolved: list[tuple[str, str]] = []
     for ds in payload.dataset:
         entry = normalized_participants.get(_normalize_dataset_name(ds))
@@ -1010,74 +1053,86 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
         elif _is_cpmp_botanical_participant(ds, ""):
             resolved.append((ds, CPMP_BOTANICAL_SEARCH_URL))
 
-    dataset_results: list[dict] = []
-
-    # --- Federation datasets ---
+    # --- Occurrence flags from DB (fast lookup, done before streaming) ---
+    occurrence_flags: dict[str, bool] = {}
     if resolved:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            tasks = [
-                fetch_from_participant(client, name, url, "", search_text)
-                for name, url in resolved
-            ]
-            responses = await asyncio.gather(*tasks)
-
-        occurrence_flags: dict[str, bool] = {}
         conn = get_connection()
         try:
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             for name, _ in resolved:
                 cursor.execute(
-                    """
-                    SELECT is_occurance_available
-                    FROM dataset_master
-                    WHERE LOWER(title) = LOWER(%s)
-                    LIMIT 1;
-                    """,
+                    "SELECT is_occurance_available FROM dataset_master WHERE LOWER(title) = LOWER(%s) LIMIT 1;",
                     (name,),
                 )
                 row = cursor.fetchone()
-                if row is not None and row.get("is_occurance_available") is not None:
-                    occurrence_flags[name] = bool(row["is_occurance_available"])
-                else:
-                    occurrence_flags[name] = False
+                occurrence_flags[name] = (
+                    bool(row["is_occurance_available"])
+                    if row and row.get("is_occurance_available") is not None
+                    else False
+                )
         finally:
             conn.close()
 
+    # --- Map datasets (sync DB query, run in thread pool) ---
+    map_results: list[dict] = await asyncio.to_thread(
+        _get_map_datasets_availability, search_text, payload.dataset
+    )
+
+    async def _stream_live():
         search_lower = search_text.lower()
-        for item in responses:
-            pname = item["participant_name"]
-            results_list = item.get("results") or []
-            count = len(results_list)
+        all_results: list[dict] = []
 
-            # Identify which fields in the returned records contain the search text
-            matched_fields_set: set[str] = set()
-            for result in results_list:
-                if not isinstance(result, dict):
-                    continue
-                for key, value in result.items():
-                    k_lower = key.lower()
-                    if k_lower.endswith("_id") or k_lower == "id":
-                        continue
-                    if value and search_lower in str(value).lower():
-                        matched_fields_set.add(key)
+        # Federation participants — emit each result as soon as it arrives
+        if resolved:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                tasks = [
+                    asyncio.ensure_future(
+                        fetch_from_participant(client, name, url, "", search_text)
+                    )
+                    for name, url in resolved
+                ]
+                for completed in asyncio.as_completed(tasks):
+                    item = await completed
+                    pname = item["participant_name"]
+                    results_list = item.get("results") or []
+                    count = len(results_list)
 
-            dataset_results.append({
-                "dataset_name": pname,
-                "display_name": pname,
-                "available": count > 0,
-                "count": count,
-                "matched_fields": sorted(matched_fields_set),
-                "is_occurance_available": occurrence_flags.get(pname, False),
-            })
+                    matched_fields_set: set[str] = set()
+                    for result in results_list:
+                        if not isinstance(result, dict):
+                            continue
+                        # CPMP API reports the matched field directly — use it
+                        if result.get("matched_with"):
+                            matched_fields_set.add(result["matched_with"])
+                            continue
+                        for key, value in result.items():
+                            k_lower = key.lower()
+                            if k_lower.endswith("_id") or k_lower in ("id", "matched_with"):
+                                continue
+                            if _value_contains(value, search_lower):
+                                matched_fields_set.add(key)
 
-    # --- Map datasets ---
-    map_results = _get_map_datasets_availability(search_text, payload.dataset)
-    dataset_results.extend(map_results)
+                    entry = {
+                        "dataset_name": pname,
+                        "available": count > 0,
+                        "count": count,
+                        "matched_fields": sorted(matched_fields_set),
+                        "is_occurance_available": occurrence_flags.get(pname, False),
+                    }
+                    all_results.append(entry)
+                    yield f"data: {json.dumps(entry)}\n\n"
 
-    return {
-        "search_text": search_text,
-        "datasets": dataset_results,
-    }
+        # Map datasets — emit after federation results
+        for r in map_results:
+            all_results.append(r)
+            yield f"data: {json.dumps(r)}\n\n"
+
+        # Store in cache for future requests
+        _SEARCH_CACHE[cache_key] = {"timestamp": time.time(), "datasets": all_results}
+
+        yield f"event: done\ndata: {json.dumps({'search_text': search_text, 'total': len(all_results), 'cached': False})}\n\n"
+
+    return StreamingResponse(_stream_live(), media_type="text/event-stream")
 
 
 @app.get("/ping")
