@@ -96,9 +96,9 @@ def get_categories_with_datasets():
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("""
-            SELECT 
-                cat.category_name, 
-                ds.dataset_id, 
+            SELECT
+                COALESCE(cat.category_name, 'Biodiversity') AS category_name,
+                ds.dataset_id,
                 ds.title AS dataset_title,
                 ds.description,
                 ds.keywords,
@@ -108,19 +108,20 @@ def get_categories_with_datasets():
                 ds.metadata_modified_date AS last_updated,
                 ds.registration_date,
                 c.name AS contact_name,
-                dm.field_name, 
+                dm.field_name,
                 dm.ontology_mapping,
                 dm.ontology_mapping_to_display,
                 dm.data_type
-            FROM 
-                category_master cat
-            LEFT JOIN 
-                dataset_master ds ON ds.category_id = cat.category_id AND ds.is_active = true
+            FROM
+                dataset_master ds
+            LEFT JOIN
+                category_master cat ON cat.category_id = ds.category_id
             LEFT JOIN
                 dataset_mapping dm ON dm.dataset_id = ds.dataset_id
             LEFT JOIN
                 dataset_contacts c ON c.dataset_id = ds.dataset_id
-            ORDER BY 
+            WHERE ds.is_active = true
+            ORDER BY
                 cat.category_name, ds.title, dm.field_name;
         """)
         
