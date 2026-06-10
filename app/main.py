@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.endpoints import dataset_master
 from app.endpoints import dataset_details
 from app.endpoints import ontology
+from app.endpoints import cphr_ontology
 from psycopg2.extras import RealDictCursor
 
 
@@ -37,6 +38,7 @@ app.include_router(dataset_master.router)
 app.include_router(dataset_details.router)
 app.include_router(ontology.router)
 app.include_router(ontology.biodiversity_router)
+app.include_router(cphr_ontology.router)
 
 # Participant API endpoints
 CPMP_BOTANICAL_SEARCH_URL = "https://cpmp.tdu.edu.in/api/species/search/v2"
