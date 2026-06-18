@@ -533,7 +533,7 @@ async def fetch_from_participant(client, participant_name: str, url: str, field:
                 "category":        ("category", "category"),
             }
             if field and field.strip():
-                field_norm = field.strip().lower().replace(" ", "_")
+                field_norm = field.strip().lower().replace("(", "").replace(")", "").replace(" ", "_").replace("__", "_")
                 source_key, output_key = RASASHASTRA_FIELD_MAP.get(field_norm, (field, field))
                 projected_items = []
                 for row in normalised_items:
@@ -935,10 +935,12 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
         "fields": (
             [CPMP_BOTANICAL_FEDERATED_FIELD]
             if payload.fields
+            and resolved_participants
             and all(
                 _is_cpmp_botanical_participant(name, url)
                 for (name, url) in resolved_participants
             )
+            and not map_dataset_results
             else [_canonical_field_name(f) for f in payload.fields]
         ),
         "search_text": payload.search_text,
