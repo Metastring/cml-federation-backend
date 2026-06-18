@@ -44,8 +44,9 @@ app.include_router(cphr_search.router)
 
 # Participant API endpoints
 CPMP_BOTANICAL_SEARCH_URL = "https://cpmp.tdu.edu.in/api/species/search/v2"
-# Federated response key for CPMP species search (API body key is also "keyword").
-CPMP_BOTANICAL_FEDERATED_FIELD = "keyword"
+# Federated response key for CPMP species search (API body key is "keyword" but
+# we surface a friendlier label in the field_results map).
+CPMP_BOTANICAL_FEDERATED_FIELD = "Search Results"
 
 PARTICIPANTS = {
     "Kew Plant Database": "http://134.209.145.106:8000/search",
@@ -515,13 +516,31 @@ async def fetch_from_participant(client, participant_name: str, url: str, field:
                     "category": nomenclature.get("category"),
                 })
 
-            # If a specific field is requested, project results down to
-            # ID + that field (e.g. drug_id + drugName).
+            # Rasashastra-specific field projection: map federated field names
+            # to the actual keys present in the normalised rows.
+            # Map requested federated field → (source key in row, output key in response).
+            # Output key uses Rasashastra's own terminology so results are not
+            # misleadingly labelled as e.g. "scientific_name".
+            RASASHASTRA_FIELD_MAP: dict[str, tuple[str, str]] = {
+                "scientific_name": ("drugName", "drug_name"),
+                "drug_name":       ("drugName", "drug_name"),
+                "drugName":        ("drugName", "drug_name"),
+                "vernacular_name_common_names": ("synonyms", "synonyms"),
+                "common_name":     ("synonyms", "synonyms"),
+                "synonyms":        ("synonyms", "synonyms"),
+                "category":        ("category", "category"),
+            }
             if field and field.strip():
-                normalised_items = [
-                    _project_biodiversity_result(row, field)
-                    for row in normalised_items
-                ]
+                source_key, output_key = RASASHASTRA_FIELD_MAP.get(field, (field, field))
+                projected_items = []
+                for row in normalised_items:
+                    proj = {k: v for k, v in row.items() if isinstance(k, str) and (k.lower().endswith("_id") or k.lower() == "id")}
+                    if source_key in row:
+                        proj[output_key] = row[source_key]
+                    elif field in row:
+                        proj[output_key] = row[field]
+                    projected_items.append(proj if proj else row)
+                normalised_items = projected_items
 
             return {
                 "participant_name": participant_name,
@@ -695,6 +714,67 @@ async def fetch_from_participant(client, participant_name: str, url: str, field:
 #     }
 
 
+async def _fetch_map_dataset_results(
+    dataset_name: str, search_text: str
+) -> dict | None:
+    """Query a local map-module dataset for federated search results.
+
+    Returns a dict with keys 'results' (list of row dicts) and 'table_name',
+    or None if the dataset is not found in the local map DB.
+    """
+    conn = get_connection()
+    try:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        cursor.execute(
+            f"SELECT geoserver_name FROM {MAP_DB_SCHEMA}.metadata "
+            "WHERE LOWER(name_of_dataset) = LOWER(%s) LIMIT 1",
+            (dataset_name,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+
+        geoserver_name = (row["geoserver_name"] or "").strip()
+        parts = geoserver_name.split(":", 1)
+        table_name = parts[1] if len(parts) == 2 else geoserver_name
+        if not table_name:
+            return None
+
+        cursor.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = %s
+              AND table_name = %s
+              AND data_type IN (
+                  'character varying', 'text', 'varchar', 'character', 'name'
+              )
+              AND column_name NOT IN ('dataset_id', 'geom')
+            ORDER BY ordinal_position
+            """,
+            (MAP_DB_SCHEMA, table_name),
+        )
+        text_columns = [r["column_name"] for r in cursor.fetchall()]
+        if not text_columns:
+            return {"results": [], "table_name": table_name}
+
+        like_term = f"%{search_text.lower()}%"
+        conditions = " OR ".join(
+            f'LOWER(t."{col}") LIKE %(term)s' for col in text_columns
+        )
+        cursor.execute(
+            f'SELECT * FROM {MAP_DB_SCHEMA}."{table_name}" t WHERE {conditions} LIMIT 100',
+            {"term": like_term},
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+        return {"results": rows, "table_name": table_name}
+    except Exception as e:
+        return {"results": [], "error": str(e)}
+    finally:
+        conn.close()
+
+
 @app.post("/federated-search")
 async def federated_search(payload: FederatedSearchRequest = Body(...)):
     # Check category
@@ -717,7 +797,18 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
         else:
             invalid_datasets.append(ds)
 
-    if not resolved_participants:
+    # For datasets not in PARTICIPANTS, check if they live in the local map DB.
+    map_dataset_results: dict[str, dict] = {}
+    still_invalid: list[str] = []
+    for ds in invalid_datasets:
+        map_result = await _fetch_map_dataset_results(ds, payload.search_text)
+        if map_result is not None:
+            map_dataset_results[ds] = map_result
+        else:
+            still_invalid.append(ds)
+    invalid_datasets = still_invalid
+
+    if not resolved_participants and not map_dataset_results:
         raise HTTPException(status_code=400, detail="No valid datasets provided.")
 
     # Look up is_occurance_availabe flag from dataset_master for each
@@ -727,7 +818,8 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
     conn = get_connection()
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        for ds_name, _url in resolved_participants:
+        all_ds_names = [ds_name for ds_name, _url in resolved_participants] + list(map_dataset_results.keys())
+        for ds_name in all_ds_names:
             cursor.execute(
                 """
                 SELECT is_occurance_available
@@ -741,7 +833,7 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
             if row is not None and "is_occurance_available" in row and row["is_occurance_available"] is not None:
                 occurrence_flags[ds_name] = bool(row["is_occurance_available"])
             else:
-                occurrence_flags[ds_name] = False
+                occurrence_flags[ds_name] = True  # local map datasets are occurrence-capable
     finally:
         conn.close()
 
@@ -802,11 +894,27 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
             "error": item.get("error")
         }
 
+    # Merge in local map dataset results (datasets not in PARTICIPANTS)
+    for ds_name, map_res in map_dataset_results.items():
+        field_results = {}
+        for f in payload.fields or [""]:
+            field_results[_canonical_field_name(f) if f else "results"] = {
+                "results": map_res.get("results", []),
+                "error": map_res.get("error"),
+            }
+        results[ds_name] = {
+            "api_url": f"local:{map_res.get('table_name', ds_name)}",
+            "field_results": field_results,
+            "is_occurance_available": occurrence_flags.get(ds_name, True),
+        }
+
+    valid_datasets = [name for (name, _url) in resolved_participants] + list(map_dataset_results.keys())
+
     return {
         "category": payload.category,
         "dataset": payload.dataset,
-        "valid_datasets": [name for (name, _url) in resolved_participants],
-        "invalid_datasets": invalid_datasets,   # <--- include info for debugging
+        "valid_datasets": valid_datasets,
+        "invalid_datasets": invalid_datasets,
         "fields": (
             [CPMP_BOTANICAL_FEDERATED_FIELD]
             if payload.fields
