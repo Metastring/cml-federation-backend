@@ -519,19 +519,22 @@ async def fetch_from_participant(client, participant_name: str, url: str, field:
             # Rasashastra-specific field projection: map federated field names
             # to the actual keys present in the normalised rows.
             # Map requested federated field → (source key in row, output key in response).
+            # Normalise the incoming field to lowercase+underscores so both
+            # "Scientific Name" and "scientific_name" resolve correctly.
             # Output key uses Rasashastra's own terminology so results are not
             # misleadingly labelled as e.g. "scientific_name".
             RASASHASTRA_FIELD_MAP: dict[str, tuple[str, str]] = {
                 "scientific_name": ("drugName", "drug_name"),
                 "drug_name":       ("drugName", "drug_name"),
-                "drugName":        ("drugName", "drug_name"),
+                "drugname":        ("drugName", "drug_name"),
                 "vernacular_name_common_names": ("synonyms", "synonyms"),
                 "common_name":     ("synonyms", "synonyms"),
                 "synonyms":        ("synonyms", "synonyms"),
                 "category":        ("category", "category"),
             }
             if field and field.strip():
-                source_key, output_key = RASASHASTRA_FIELD_MAP.get(field, (field, field))
+                field_norm = field.strip().lower().replace(" ", "_")
+                source_key, output_key = RASASHASTRA_FIELD_MAP.get(field_norm, (field, field))
                 projected_items = []
                 for row in normalised_items:
                     proj = {k: v for k, v in row.items() if isinstance(k, str) and (k.lower().endswith("_id") or k.lower() == "id")}
@@ -763,8 +766,22 @@ async def _fetch_map_dataset_results(
         conditions = " OR ".join(
             f'LOWER(t."{col}") LIKE %(term)s' for col in text_columns
         )
+        # Fetch all columns except geom (raw binary) and dataset_id
         cursor.execute(
-            f'SELECT * FROM {MAP_DB_SCHEMA}."{table_name}" t WHERE {conditions} LIMIT 100',
+            """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema = %s AND table_name = %s
+              AND column_name NOT IN ('geom', 'dataset_id')
+            ORDER BY ordinal_position
+            """,
+            (MAP_DB_SCHEMA, table_name),
+        )
+        select_cols = ", ".join(f't."{r["column_name"]}"' for r in cursor.fetchall())
+        if not select_cols:
+            select_cols = "*"
+
+        cursor.execute(
+            f'SELECT {select_cols} FROM {MAP_DB_SCHEMA}."{table_name}" t WHERE {conditions} LIMIT 100',
             {"term": like_term},
         )
         rows = [dict(r) for r in cursor.fetchall()]
