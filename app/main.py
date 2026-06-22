@@ -6,6 +6,7 @@ import httpx
 import asyncio
 import json
 import os
+import re
 import time
 
 # Include other internal modules
@@ -1269,3 +1270,307 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
 @app.get("/ping")
 def ping():
     return {"ping": "pong"}
+
+
+# ── federated-search-with-ontology ──────────────────────────────────────────
+
+FUSEKI_SPARQL_ENDPOINT = "http://139.59.23.148:3030/myds/sparql"
+# Named graphs loaded in Fuseki
+_CML_GRAPH_PREFIX = "http://cml.org/ontology"
+
+
+def _local_name_from_uri(uri: str) -> str:
+    if "#" in uri:
+        return uri.rsplit("#", 1)[-1]
+    if "/" in uri:
+        return uri.rstrip("/").rsplit("/", 1)[-1]
+    return uri
+
+
+def _build_ontology_field_check_query(field: str) -> str:
+    """SPARQL to find any CML ontology entity whose URI or label matches field."""
+    field_bare = re.sub(r"[^a-z0-9]", "", field.lower())  # bare alphanumeric (e.g. "scientificname")
+    field_spaced = field.lower().replace("_", " ")          # underscores → spaces
+    field_escaped = re.escape(field.lower())                # for URI suffix regex
+
+    return f"""
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+SELECT DISTINCT ?entity WHERE {{
+  {{
+    GRAPH ?g {{
+      ?entity ?p ?o .
+      FILTER(
+        REGEX(LCASE(STR(?entity)), "[/#]{field_escaped}$") ||
+        REGEX(LCASE(STR(?entity)), "[/#]{field_bare}$")
+      )
+    }}
+  }}
+  UNION
+  {{
+    GRAPH ?g {{
+      ?entity rdfs:label ?lbl .
+      FILTER(
+        LCASE(STR(?lbl)) = "{field.lower()}" ||
+        LCASE(STR(?lbl)) = "{field_spaced}"
+      )
+    }}
+  }}
+}}
+LIMIT 1
+"""
+
+
+async def _check_field_in_fuseki(client: httpx.AsyncClient, field: str) -> bool:
+    """Return True if the field matches any entity in any CML ontology graph in Fuseki."""
+    try:
+        query = _build_ontology_field_check_query(field)
+        response = await client.post(
+            FUSEKI_SPARQL_ENDPOINT,
+            data={"query": query},
+            headers={"Accept": "application/sparql-results+json"},
+            timeout=10.0,
+        )
+        response.raise_for_status()
+        bindings = response.json().get("results", {}).get("bindings", [])
+        return len(bindings) > 0
+    except Exception:
+        return False
+
+
+def _get_datasets_for_ontology_field(field: str) -> list[str]:
+    """
+    Query dataset_mapping to find dataset titles that have this ontology field.
+
+    Matches on ontology_mapping = field (the canonical federated field identifier)
+    OR field_name = field (the raw dataset column name).
+    Returns a list of dataset_master.title values.
+    """
+    conn = get_connection()
+    try:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute(
+            """
+            SELECT DISTINCT master.title
+            FROM dataset_mapping dm
+            JOIN dataset_master master ON master.dataset_id = dm.dataset_id
+            WHERE LOWER(dm.ontology_mapping) = LOWER(%s)
+               OR LOWER(dm.field_name) = LOWER(%s)
+            ORDER BY master.title
+            """,
+            (field, field),
+        )
+        rows = cursor.fetchall() or []
+        return [row["title"] for row in rows if row.get("title")]
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+@app.post("/federated-search-with-ontology")
+async def federated_search_with_ontology(payload: FederatedSearchRequest = Body(...)):
+    """
+    Ontology-routed federated search.
+
+    Same input/output shape as /federated-search.  Instead of searching all
+    requested datasets, the API:
+      1. Checks each requested field against the CML ontology in Fuseki.
+      2. Looks up which datasets have that field registered in dataset_mapping.
+      3. Searches ONLY those datasets for the given search_text.
+    """
+    if "biodiversity" not in [c.lower() for c in payload.category]:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one category must be 'biodiversity'.",
+        )
+
+    if not payload.fields:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one field is required for ontology-routed search.",
+        )
+
+    # ── Step 1: For each field, check Fuseki ontology + dataset_mapping ──────
+    # field → list of dataset titles that carry this field
+    field_to_dataset_titles: dict[str, list[str]] = {}
+
+    async with httpx.AsyncClient(timeout=15.0) as ontology_client:
+        for field in payload.fields:
+            # Check Fuseki first (non-blocking on failure)
+            in_fuseki = await _check_field_in_fuseki(ontology_client, field)
+
+            # Query dataset_mapping for this field regardless of Fuseki result
+            # (DB is the authoritative registry of field→dataset mappings)
+            db_titles = _get_datasets_for_ontology_field(field)
+
+            if in_fuseki or db_titles:
+                field_to_dataset_titles[field] = db_titles
+
+    if not field_to_dataset_titles:
+        return {
+            "category": payload.category,
+            "dataset": payload.dataset,
+            "valid_datasets": [],
+            "invalid_datasets": payload.dataset,
+            "fields": payload.fields,
+            "search_text": payload.search_text,
+            "results": {},
+        }
+
+    # ── Step 2: Collect all unique dataset titles from ontology mapping ───────
+    all_ontology_datasets: set[str] = set()
+    for titles in field_to_dataset_titles.values():
+        all_ontology_datasets.update(titles)
+
+    # ── Step 3: Resolve dataset titles to participant URLs ────────────────────
+    normalized_participants = {
+        _normalize_dataset_name(name): url for name, url in PARTICIPANTS.items()
+    }
+
+    resolved_participants: list[tuple[str, str]] = []
+    unresolved: list[str] = []
+
+    for ds in all_ontology_datasets:
+        url = _resolve_participant_url(ds, normalized_participants)
+        if url:
+            resolved_participants.append((ds, url))
+        else:
+            unresolved.append(ds)
+
+    # Check unresolved titles against local map DB
+    map_dataset_results: dict[str, dict] = {}
+    still_invalid: list[str] = []
+    for ds in unresolved:
+        map_result = await _fetch_map_dataset_results(ds, payload.search_text)
+        if map_result is not None:
+            map_dataset_results[ds] = map_result
+        else:
+            still_invalid.append(ds)
+
+    invalid_datasets = still_invalid
+
+    if not resolved_participants and not map_dataset_results:
+        return {
+            "category": payload.category,
+            "dataset": payload.dataset,
+            "valid_datasets": [],
+            "invalid_datasets": list(all_ontology_datasets),
+            "fields": [f for f in payload.fields if f in field_to_dataset_titles],
+            "search_text": payload.search_text,
+            "results": {},
+        }
+
+    # ── Step 4: Occurrence flags from dataset_master ──────────────────────────
+    occurrence_flags: dict[str, bool] = {}
+    conn = get_connection()
+    try:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        all_ds_names = (
+            [name for name, _ in resolved_participants]
+            + list(map_dataset_results.keys())
+        )
+        for ds_name in all_ds_names:
+            cursor.execute(
+                """
+                SELECT is_occurance_available FROM dataset_master
+                WHERE LOWER(title) = LOWER(%s) LIMIT 1;
+                """,
+                (ds_name,),
+            )
+            row = cursor.fetchone()
+            if row is not None and row.get("is_occurance_available") is not None:
+                occurrence_flags[ds_name] = bool(row["is_occurance_available"])
+            else:
+                occurrence_flags[ds_name] = True
+    finally:
+        conn.close()
+
+    # ── Step 5: Fan-out search — only to ontology-mapped datasets ────────────
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        tasks = []
+        for participant_name, url in resolved_participants:
+            # Find which fields are mapped to this dataset
+            fields_for_ds = [
+                f for f, titles in field_to_dataset_titles.items()
+                if participant_name in titles
+            ]
+            if not fields_for_ds:
+                fields_for_ds = list(field_to_dataset_titles.keys())
+
+            if _is_cpmp_botanical_participant(participant_name, url):
+                tasks.append(
+                    fetch_from_participant(
+                        client, participant_name, url, "", payload.search_text
+                    )
+                )
+            else:
+                for field in fields_for_ds:
+                    tasks.append(
+                        fetch_from_participant(
+                            client, participant_name, url, field, payload.search_text
+                        )
+                    )
+        responses = await asyncio.gather(*tasks)
+
+    # ── Step 6: Aggregate results (same shape as /federated-search) ───────────
+    results: dict = {}
+    for item in responses:
+        pname = item["participant_name"]
+        if pname not in results:
+            results[pname] = {
+                "api_url": item["api_url"],
+                "field_results": {},
+                "is_occurance_available": occurrence_flags.get(pname, False),
+            }
+        if _is_cpmp_botanical_participant(pname, item["api_url"]):
+            response_field = CPMP_BOTANICAL_FEDERATED_FIELD
+        else:
+            response_field = _canonical_field_name(item["field"])
+        results[pname]["field_results"][response_field] = {
+            "results": item["results"],
+            "error": item.get("error"),
+        }
+
+    # Merge local map dataset results
+    for ds_name, map_res in map_dataset_results.items():
+        fields_for_ds = [
+            f for f, titles in field_to_dataset_titles.items()
+            if ds_name in titles
+        ] or list(field_to_dataset_titles.keys())
+        field_results: dict = {}
+        for f in fields_for_ds:
+            key = _canonical_field_name(f) if f else "results"
+            field_results[key] = {
+                "results": map_res.get("results", []),
+                "error": map_res.get("error"),
+            }
+        results[ds_name] = {
+            "api_url": f"local:{map_res.get('table_name', ds_name)}",
+            "field_results": field_results,
+            "is_occurance_available": occurrence_flags.get(ds_name, True),
+        }
+
+    valid_datasets = (
+        [name for name, _ in resolved_participants] + list(map_dataset_results.keys())
+    )
+    active_fields = [f for f in payload.fields if f in field_to_dataset_titles]
+
+    return {
+        "category": payload.category,
+        "dataset": payload.dataset,
+        "valid_datasets": valid_datasets,
+        "invalid_datasets": invalid_datasets,
+        "fields": (
+            [CPMP_BOTANICAL_FEDERATED_FIELD]
+            if active_fields
+            and resolved_participants
+            and all(
+                _is_cpmp_botanical_participant(name, url)
+                for name, url in resolved_participants
+            )
+            and not map_dataset_results
+            else [_canonical_field_name(f) for f in active_fields]
+        ),
+        "search_text": payload.search_text,
+        "results": results,
+    }
