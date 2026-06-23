@@ -59,6 +59,16 @@ PARTICIPANTS = {
     "Rasashastra: A Database of Metals and Minerals used in Ayurveda": "https://rasashastra.tdu.edu.in/mm_api/advanced/search",
 }
 
+# Frontend redirect URLs for each participant dataset.
+# These replace the internal API URL in the federated response so the frontend
+# can link directly to the record detail page (append the record ID).
+PARTICIPANT_FRONTEND_URLS: dict[str, str] = {
+    "CPMP Botanical Source": "https://cpmp.tdu.edu.in/explore/plant_species?id=",
+    "CPMP Drug Source": "https://cpmp.tdu.edu.in/explore/drugs?id=",
+    "Traded Medicinal Plants of India (TMPI)": "https://tradedmedicinalplants.org/plant/",
+    "Rasashastra: A Database of Metals and Minerals used in Ayurveda": "https://rasashastra.tdu.edu.in/mm_api/metals/details?drugId=",
+}
+
 # Schema that holds the map module's dataset tables (upload_logs, metadata, and
 # the dynamic per-dataset tables registered via map_module_backend).
 MAP_DB_SCHEMA = os.getenv("MAP_DB_SCHEMA", "public")
@@ -303,12 +313,42 @@ def _canonical_field_name(field: str) -> str:
 
     return field
 
+
+def _apply_display_fields(field_results: dict, display_fields: list[str]) -> dict:
+    """Re-key field_results by display_fields instead of search field names.
+
+    All results across every searched field are combined (deduplicated) and placed
+    under each display_field key so the frontend can use stable column headers.
+    """
+    if not display_fields:
+        return field_results
+
+    seen: set[str] = set()
+    all_results: list[dict] = []
+    combined_error = None
+
+    for field_data in field_results.values():
+        for row in (field_data.get("results") or []):
+            dedup_key = json.dumps(row, sort_keys=True, default=str)
+            if dedup_key not in seen:
+                seen.add(dedup_key)
+                all_results.append(row)
+        if field_data.get("error"):
+            combined_error = field_data["error"]
+
+    return {
+        df: {"results": all_results, "error": combined_error}
+        for df in display_fields
+    }
+
+
 # Updated request payload model
 class FederatedSearchRequest(BaseModel):
     category: list[str]
     dataset: list[str]
     fields: list[str]
     search_text: str
+    display_fields: list[str] = []
 
 async def fetch_from_participant(client, participant_name: str, url: str, field: str, query: str):
     try:
@@ -456,12 +496,17 @@ async def fetch_from_participant(client, participant_name: str, url: str, field:
             # surface ingredient_id.
             normalised_items = []
             for item in filtered_results:
-                normalised_items.append({
+                norm = {
                     "ingredient_id": item.get("ingredient_id"),
                     "taxon_name": item.get("sanskrit_name"),
                     "sanskrit_name": item.get("sanskrit_name"),
                     "common_name": item.get("ingredient_common_name"),
-                })
+                }
+                # Preserve the requested field if it isn't already covered by
+                # the standard mapping above (e.g. "rasa", "guna", "vipaka").
+                if field and field.strip() and field not in norm and field in item:
+                    norm[field] = item[field]
+                normalised_items.append(norm)
 
             # If a specific field is requested, project results down to
             # ID + that field (e.g. ingredient_id + taxon_name for
@@ -903,7 +948,7 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
         pname = item["participant_name"]
         if pname not in results:
             results[pname] = {
-                "api_url": item["api_url"],
+                "api_url": PARTICIPANT_FRONTEND_URLS.get(pname, item["api_url"]),
                 "field_results": {},
                 "is_occurance_available": occurrence_flags.get(pname, False),
             }
@@ -931,6 +976,12 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
         }
 
     valid_datasets = [name for (name, _url) in resolved_participants] + list(map_dataset_results.keys())
+
+    if payload.display_fields:
+        for pname in results:
+            results[pname]["field_results"] = _apply_display_fields(
+                results[pname]["field_results"], payload.display_fields
+            )
 
     return {
         "category": payload.category,
@@ -1522,7 +1573,7 @@ async def federated_search_with_ontology(payload: FederatedSearchRequest = Body(
         pname = item["participant_name"]
         if pname not in results:
             results[pname] = {
-                "api_url": item["api_url"],
+                "api_url": PARTICIPANT_FRONTEND_URLS.get(pname, item["api_url"]),
                 "field_results": {},
                 "is_occurance_available": occurrence_flags.get(pname, False),
             }
@@ -1558,6 +1609,12 @@ async def federated_search_with_ontology(payload: FederatedSearchRequest = Body(
         [name for name, _ in resolved_participants] + list(map_dataset_results.keys())
     )
     active_fields = [f for f in payload.fields if f in field_to_dataset_titles]
+
+    if payload.display_fields:
+        for pname in results:
+            results[pname]["field_results"] = _apply_display_fields(
+                results[pname]["field_results"], payload.display_fields
+            )
 
     return {
         "category": payload.category,
@@ -1732,7 +1789,7 @@ async def federated_search_with_strict_ontology_check(payload: FederatedSearchRe
         pname = item["participant_name"]
         if pname not in results:
             results[pname] = {
-                "api_url": item["api_url"],
+                "api_url": PARTICIPANT_FRONTEND_URLS.get(pname, item["api_url"]),
                 "field_results": {},
                 "is_occurance_available": occurrence_flags.get(pname, False),
             }
@@ -1767,6 +1824,12 @@ async def federated_search_with_strict_ontology_check(payload: FederatedSearchRe
         [name for name, _ in resolved_participants] + list(map_dataset_results.keys())
     )
     active_fields = [f for f in payload.fields if f in field_to_dataset_titles]
+
+    if payload.display_fields:
+        for pname in results:
+            results[pname]["field_results"] = _apply_display_fields(
+                results[pname]["field_results"], payload.display_fields
+            )
 
     return {
         "category": payload.category,
