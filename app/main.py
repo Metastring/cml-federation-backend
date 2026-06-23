@@ -26,6 +26,12 @@ from psycopg2.extras import RealDictCursor
 
 app = FastAPI()
 
+
+@app.on_event("startup")
+async def startup_event():
+    _load_dataset_ontology_maps()
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  
@@ -72,6 +78,65 @@ PARTICIPANT_FRONTEND_URLS: dict[str, str] = {
 # Schema that holds the map module's dataset tables (upload_logs, metadata, and
 # the dynamic per-dataset tables registered via map_module_backend).
 MAP_DB_SCHEMA = os.getenv("MAP_DB_SCHEMA", "public")
+
+# ── Ontology field mapping loaded from dataset_mapping table ─────────────────
+# Keyed by dataset title → {normalised_raw_field: ontology_mapping}
+_DATASET_ONTOLOGY_MAP: dict[str, dict[str, str]] = {}
+
+
+def _norm_field_key(field: str) -> str:
+    """Collapse a field name to lowercase with all spaces/underscores/hyphens removed.
+
+    This lets us fuzzy-match raw API keys like 'scientificName', 'scientific_name',
+    and 'scientific name' to the same dataset_mapping.field_name entry.
+    """
+    return re.sub(r"[\s_\-]", "", field).lower()
+
+
+def _load_dataset_ontology_maps() -> None:
+    """Populate _DATASET_ONTOLOGY_MAP from the dataset_mapping table."""
+    global _DATASET_ONTOLOGY_MAP
+    try:
+        conn = get_connection()
+        try:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute(
+                """
+                SELECT d.title, dm.field_name, dm.ontology_mapping
+                FROM dataset_mapping dm
+                JOIN dataset_master d ON d.dataset_id = dm.dataset_id
+                """
+            )
+            mapping: dict[str, dict[str, str]] = {}
+            for row in cur.fetchall():
+                title = row["title"]
+                if title not in mapping:
+                    mapping[title] = {}
+                mapping[title][_norm_field_key(row["field_name"])] = row["ontology_mapping"]
+            _DATASET_ONTOLOGY_MAP = mapping
+        finally:
+            conn.close()
+    except Exception:
+        pass  # Non-fatal — fall back to raw field names
+
+
+def _map_row_to_ontology(row: dict, dataset_name: str) -> dict:
+    """Re-key a result row using ontology field names from dataset_mapping.
+
+    Fields whose lowercase name ends with 'id' are always kept as-is (IDs).
+    Every other field is looked up in the dataset's ontology map; if no mapping
+    exists the original key is preserved so no data is silently dropped.
+    """
+    field_map = _DATASET_ONTOLOGY_MAP.get(dataset_name, {})
+    result: dict = {}
+    for key, value in row.items():
+        k_lower = str(key).lower()
+        if k_lower.endswith("id") or k_lower == "id":
+            result[key] = value
+        else:
+            ontology_key = field_map.get(_norm_field_key(key), key)
+            result[ontology_key] = value
+    return result
 
 # ── In-memory result cache for /pre-federated-search ───────────────────────
 _SEARCH_CACHE: dict[tuple, dict] = {}
@@ -272,19 +337,13 @@ async def _fetch_cpmp_botanical_source(
         if isinstance(common_names, list):
             common_names = ", ".join([c for c in common_names if c]) or None
 
-        normalised_items.append({
-            "taxon_id": item.get("taxonId"),
-            "scientific_name": item.get("taxonName"),
-            "common_names": common_names,
-            "matched_with": item.get("matchedWith"),
-        })
-
-    # ``field`` shapes the federated response only; it is never sent to CPMP.
-    if field and field.strip():
-        normalised_items = [
-            _project_biodiversity_result(row, field)
-            for row in normalised_items
-        ]
+        raw_row = {
+            "taxonId": item.get("taxonId"),
+            "taxonName": item.get("taxonName"),
+            "commonNames": common_names,
+            "matchedWith": item.get("matchedWith"),
+        }
+        normalised_items.append(_map_row_to_ontology(raw_row, participant_name))
 
     return {
         "participant_name": participant_name,
@@ -368,21 +427,13 @@ async def fetch_from_participant(client, participant_name: str, url: str, field:
                 if not isinstance(item, dict):
                     continue
 
-                normalised_items.append({
-                    "drug_id": item.get("officialDrugId"),
-                    "drug_name": item.get("officialDrugName"),
-                    "english_name": item.get("officialDrugNameEnglish"),
-                    "sanskrit_name": item.get("officialDrugNameSanskrit"),
-                })
-
-            # If a specific field is requested, project results down
-            # to ID columns plus that field, consistent with other
-            # participants.
-            if field and field.strip():
-                normalised_items = [
-                    _project_biodiversity_result(row, field)
-                    for row in normalised_items
-                ]
+                raw_row = {
+                    "officialDrugId": item.get("officialDrugId"),
+                    "officialDrugName": item.get("officialDrugName"),
+                    "officialDrugNameEnglish": item.get("officialDrugNameEnglish"),
+                    "officialDrugNameSanskrit": item.get("officialDrugNameSanskrit"),
+                }
+                normalised_items.append(_map_row_to_ontology(raw_row, participant_name))
 
             return {
                 "participant_name": participant_name,
@@ -491,31 +542,12 @@ async def fetch_from_participant(client, participant_name: str, url: str, field:
                     if query_norm in blob:
                         filtered_results.append(item)
 
-            # Normalise each hit: ingredient_common_name -> common_name,
-            # sanskrit_name -> both taxon_name and sanskrit_name, and
-            # surface ingredient_id.
-            normalised_items = []
-            for item in filtered_results:
-                norm = {
-                    "ingredient_id": item.get("ingredient_id"),
-                    "taxon_name": item.get("sanskrit_name"),
-                    "sanskrit_name": item.get("sanskrit_name"),
-                    "common_name": item.get("ingredient_common_name"),
-                }
-                # Preserve the requested field if it isn't already covered by
-                # the standard mapping above (e.g. "rasa", "guna", "vipaka").
-                if field and field.strip() and field not in norm and field in item:
-                    norm[field] = item[field]
-                normalised_items.append(norm)
-
-            # If a specific field is requested, project results down to
-            # ID + that field (e.g. ingredient_id + taxon_name for
-            # "sanskrit_name").
-            if field and field.strip():
-                normalised_items = [
-                    _project_biodiversity_result(row, field)
-                    for row in normalised_items
-                ]
+            # Map all raw Ayurahaar fields to their ontology names using dataset_mapping.
+            normalised_items = [
+                _map_row_to_ontology(item, participant_name)
+                for item in filtered_results
+                if isinstance(item, dict)
+            ]
 
             return {
                 "participant_name": participant_name,
@@ -555,42 +587,15 @@ async def fetch_from_participant(client, participant_name: str, url: str, field:
                 modern_info = item.get("modernInformation") or {}
                 dosage = item.get("dosageAndTreatment") or {}
 
-                normalised_items.append({
-                    "drug_id": item.get("drugId") or modern_info.get("drugId"),
-                    "drugName": modern_info.get("drugName") or nomenclature.get("drugName"),
+                # Flatten nested Rasashastra structure then map to ontology
+                raw_row = {
+                    "drugId": item.get("drugId") or modern_info.get("drugId"),
+                    "drug_name": modern_info.get("drugName") or nomenclature.get("drugName"),
                     "synonyms": nomenclature.get("synonyms"),
                     "dosageAndTreatment": dosage,
                     "category": nomenclature.get("category"),
-                })
-
-            # Rasashastra-specific field projection: map federated field names
-            # to the actual keys present in the normalised rows.
-            # Map requested federated field → (source key in row, output key in response).
-            # Normalise the incoming field to lowercase+underscores so both
-            # "Scientific Name" and "scientific_name" resolve correctly.
-            # Output key uses Rasashastra's own terminology so results are not
-            # misleadingly labelled as e.g. "scientific_name".
-            RASASHASTRA_FIELD_MAP: dict[str, tuple[str, str]] = {
-                "scientific_name": ("drugName", "drug_name"),
-                "drug_name":       ("drugName", "drug_name"),
-                "drugname":        ("drugName", "drug_name"),
-                "vernacular_name_common_names": ("synonyms", "synonyms"),
-                "common_name":     ("synonyms", "synonyms"),
-                "synonyms":        ("synonyms", "synonyms"),
-                "category":        ("category", "category"),
-            }
-            if field and field.strip():
-                field_norm = field.strip().lower().replace("(", "").replace(")", "").replace(" ", "_").replace("__", "_")
-                source_key, output_key = RASASHASTRA_FIELD_MAP.get(field_norm, (field, field))
-                projected_items = []
-                for row in normalised_items:
-                    proj = {k: v for k, v in row.items() if isinstance(k, str) and (k.lower().endswith("_id") or k.lower() == "id")}
-                    if source_key in row:
-                        proj[output_key] = row[source_key]
-                    elif field in row:
-                        proj[output_key] = row[field]
-                    projected_items.append(proj if proj else row)
-                normalised_items = projected_items
+                }
+                normalised_items.append(_map_row_to_ontology(raw_row, participant_name))
 
             return {
                 "participant_name": participant_name,
@@ -635,26 +640,15 @@ async def fetch_from_participant(client, participant_name: str, url: str, field:
                 if not isinstance(item, dict):
                     continue
 
-                scientific_list = item.get("scientificName") or []
-                common_list = item.get("commonName") or []
+                # Flatten list-valued fields to comma-separated strings
+                flat: dict = {}
+                for k, v in item.items():
+                    if isinstance(v, list):
+                        flat[k] = ", ".join(str(x) for x in v if x) or None
+                    else:
+                        flat[k] = v
 
-                taxon_name = None
-                if isinstance(scientific_list, list) and scientific_list:
-                    taxon_name = scientific_list[0]
-                elif isinstance(scientific_list, str):
-                    taxon_name = scientific_list
-
-                common_names = None
-                if isinstance(common_list, list):
-                    common_names = ", ".join([c for c in common_list if c]) or None
-                elif isinstance(common_list, str):
-                    common_names = common_list
-
-                normalised_items.append({
-                    "taxon_id": item.get("plantId"),
-                    "taxon_name": taxon_name,
-                    "common_names": common_names,
-                })
+                normalised_items.append(_map_row_to_ontology(flat, participant_name))
 
             return {
                 "participant_name": participant_name,
@@ -681,22 +675,10 @@ async def fetch_from_participant(client, participant_name: str, url: str, field:
         response.raise_for_status()
         raw_results = response.json().get("results", [])
 
-        # For biodiversity participants that follow the common Kew/CPMP
-        # contract, if a specific field was requested we only return ID
-        # columns plus that field.
-        biodiversity_participants = {
-            "Kew Plant Database",
-        }
-
-        if field and field.strip() and participant_name in biodiversity_participants:
-            processed_results = []
-            for row in raw_results:
-                if isinstance(row, dict):
-                    processed_results.append(_project_biodiversity_result(row, field))
-                else:
-                    processed_results.append(row)
-        else:
-            processed_results = raw_results
+        processed_results = [
+            _map_row_to_ontology(row, participant_name) if isinstance(row, dict) else row
+            for row in raw_results
+        ]
 
         return {
             "participant_name": participant_name,
