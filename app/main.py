@@ -656,14 +656,6 @@ async def fetch_from_participant(client, participant_name: str, url: str, field:
                     "common_names": common_names,
                 })
 
-            # If the caller requested a specific field, project the
-            # results down to only ID columns + that field.
-            if field and field.strip():
-                normalised_items = [
-                    _project_biodiversity_result(row, field)
-                    for row in normalised_items
-                ]
-
             return {
                 "participant_name": participant_name,
                 "field": field,
