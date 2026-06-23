@@ -505,48 +505,74 @@ async def fetch_from_participant(client, participant_name: str, url: str, field:
             items = data if isinstance(data, list) else []
             query_norm = (query or "").strip().lower()
 
+            # trait_detail is a nested list: [{trait_name, trait_value, ...}, ...]
+            # Flatten it so rasa/guna/vipaka etc. become top-level fields that
+            # can be searched and ontology-mapped like any other field.
+            # Keys are normalized trait_name values (parens stripped, lowercased,
+            # spaces removed). Values are the ontology field names to use.
+            _AYURAHAAR_TRAIT_MAP: dict[str, str] = {
+                "rasa":          "rasa",         # "Rasa(Taste)"       → "rasa"
+                "guna":          "guna",         # "Guna (Properties)" → "guna"
+                "virya":         "veerya",       # "Virya (Potency)"   → "veerya"
+                "vipaka":        "vipaka",       # "Vipaka"            → "vipaka"
+                "doshakarma":    "dosha_action", # "DoshaKarma"        → "dosha_action"
+                "ayurvedavargas": "varga",       # "Ayurveda Vargas"   → "varga"
+            }
+
+            def _flatten_ayurahaar(raw: dict) -> dict:
+                flat = {k: v for k, v in raw.items() if k != "trait_detail"}
+                for trait in (raw.get("trait_detail") or []):
+                    if not isinstance(trait, dict):
+                        continue
+                    raw_name = trait.get("trait_name") or ""
+                    norm_name = re.sub(r"\([^)]*\)", "", raw_name).lower().replace(" ", "")
+                    field_key = _AYURAHAAR_TRAIT_MAP.get(norm_name, norm_name) or None
+                    if not field_key:
+                        continue
+                    val = trait.get("trait_value")
+                    if val is None:
+                        continue
+                    if field_key in flat:
+                        existing = flat[field_key]
+                        if isinstance(existing, list):
+                            existing.append(val)
+                        else:
+                            flat[field_key] = [existing, val]
+                    else:
+                        flat[field_key] = val
+                return flat
+
+            flattened_items = [
+                _flatten_ayurahaar(item)
+                for item in items
+                if isinstance(item, dict)
+            ]
+
             filtered_results = []
             if query_norm:
                 field_norm = (field or "").strip().lower()
-                for item in items:
-                    if not isinstance(item, dict):
-                        continue
-
-                    # If a specific field is requested, restrict matching to that
-                    # field; otherwise, search across the full object.
-                    target_text = None
-                    if field_norm in {"ingredient_name", "ingredient_common_name"}:
-                        target_text = (item.get("ingredient_common_name") or "").lower()
-                    elif field_norm in {"sanskrit_name"}:
-                        target_text = (item.get("sanskrit_name") or "").lower()
-
-                    # Generic case: if the requested field name exists as a
-                    # top-level key in the Ayurahaar ingredient object, search
-                    # only within that column.
-                    if target_text is None and field and field in item:
-                        value = item.get(field)
-                        if value is not None:
-                            target_text = str(value).lower()
-
-                    if target_text is not None:
+                for item in flattened_items:
+                    # If a specific field exists as a top-level key, restrict
+                    # matching to that field; otherwise search the full object.
+                    if field_norm and field_norm in item:
+                        val = item[field_norm]
+                        target_text = (
+                            ", ".join(str(v) for v in val) if isinstance(val, list) else str(val)
+                        ).lower()
                         if query_norm in target_text:
                             filtered_results.append(item)
-                        continue
+                    else:
+                        try:
+                            blob = json.dumps(item, ensure_ascii=False).lower()
+                        except TypeError:
+                            continue
+                        if query_norm in blob:
+                            filtered_results.append(item)
 
-                    # Fallback: search everywhere in the object payload
-                    try:
-                        blob = json.dumps(item, ensure_ascii=False).lower()
-                    except TypeError:
-                        continue
-
-                    if query_norm in blob:
-                        filtered_results.append(item)
-
-            # Map all raw Ayurahaar fields to their ontology names using dataset_mapping.
+            # Map all flattened fields to ontology names using dataset_mapping.
             normalised_items = [
                 _map_row_to_ontology(item, participant_name)
                 for item in filtered_results
-                if isinstance(item, dict)
             ]
 
             return {
