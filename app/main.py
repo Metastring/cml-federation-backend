@@ -1615,7 +1615,8 @@ async def federated_search_with_strict_ontology_check(payload: FederatedSearchRe
             if not in_fuseki:
                 rejected_fields.append(field)
                 continue
-            # Fuseki confirmed — use DB to find which datasets carry this field
+            # Fuseki confirmed — use DB to find which datasets carry this field;
+            # if no DB mapping exists, don't search anywhere for this field
             db_titles = _get_datasets_for_ontology_field(field)
             field_to_dataset_titles[field] = db_titles
 
