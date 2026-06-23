@@ -5,6 +5,7 @@ from pydantic import BaseModel
 import httpx
 import asyncio
 import json
+import math
 import os
 import re
 import time
@@ -785,7 +786,10 @@ async def _fetch_map_dataset_results(
             f'SELECT {select_cols} FROM {MAP_DB_SCHEMA}."{table_name}" t WHERE {conditions} LIMIT 100',
             {"term": like_term},
         )
-        rows = [dict(r) for r in cursor.fetchall()]
+        rows = [
+            {k: (None if isinstance(v, float) and not math.isfinite(v) else v) for k, v in dict(r).items()}
+            for r in cursor.fetchall()
+        ]
         return {"results": rows, "table_name": table_name}
     except Exception as e:
         return {"results": [], "error": str(e)}
