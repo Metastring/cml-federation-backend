@@ -1206,8 +1206,7 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
                     "available": False,
                     "count": 0,
                     "matched_fields": [],
-                    "is_occurance_available": True,
-                    **_fetch_layer_info(cursor, table_name),
+                    "is_occurrence_available": True,
                 })
                 continue
 
@@ -1238,17 +1237,29 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
                 count = 0
                 matched_cols = []
 
-            matched_fields = [
-                field_display.get(col.lower(), col) for col in matched_cols
-            ]
+            layer_info = _fetch_layer_info(cursor, table_name)
+            style_by_color = {
+                s["colorBy"].lower(): s
+                for s in layer_info.get("styles", [])
+                if s.get("colorBy")
+            }
+            matched_fields = []
+            for col in matched_cols:
+                field_name = field_display.get(col.lower(), col)
+                s = style_by_color.get(col.lower())
+                mf: dict = {"field": field_name}
+                if s:
+                    mf["styleName"] = s["styleName"]
+                    mf["styleTitle"] = s["styleTitle"]
+                    mf["styleId"] = s["styleId"]
+                matched_fields.append(mf)
 
             results.append({
                 "dataset_name": display_name or table_name,
                 "available": count > 0,
                 "count": count,
                 "matched_fields": matched_fields,
-                "is_occurance_available": True,
-                **_fetch_layer_info(cursor, table_name),
+                "is_occurrence_available": True,
             })
     finally:
         conn.close()
@@ -1263,7 +1274,7 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
 
     Response: text/event-stream
       Each event:  data: <JSON object with dataset_name, available, count,
-                         matched_fields, is_occurance_available>
+                         matched_fields, is_occurrence_available>
       Final event: event: done
                    data: {"search_text": "...", "total": N, "cached": bool}
 
@@ -1373,13 +1384,28 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
                             if _value_contains(value, search_lower):
                                 matched_fields_set.add(key)
 
+                    layer_info = participant_layer_info.get(pname, {})
+                    style_by_color = {
+                        s["colorBy"].lower(): s
+                        for s in layer_info.get("styles", [])
+                        if s.get("colorBy")
+                    }
+                    matched_fields_list = []
+                    for field in sorted(matched_fields_set):
+                        s = style_by_color.get(field.lower())
+                        mf: dict = {"field": field}
+                        if s:
+                            mf["styleName"] = s["styleName"]
+                            mf["styleTitle"] = s["styleTitle"]
+                            mf["styleId"] = s["styleId"]
+                        matched_fields_list.append(mf)
+
                     entry = {
                         "dataset_name": pname,
                         "available": count > 0,
                         "count": count,
-                        "matched_fields": sorted(matched_fields_set),
-                        "is_occurance_available": occurrence_flags.get(pname, False),
-                        **participant_layer_info.get(pname, {"styles": [], "titleColumn": None, "summaryColumn": []}),
+                        "matched_fields": matched_fields_list,
+                        "is_occurrence_available": occurrence_flags.get(pname, False),
                     }
                     all_results.append(entry)
                     yield f"data: {json.dumps(entry)}\n\n"
