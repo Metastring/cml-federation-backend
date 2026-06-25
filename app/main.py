@@ -266,7 +266,65 @@ def _normalize_dataset_name(name: str) -> str:
     - Normalize curly apostrophes to straight ones
     """
 
-    return name.strip().lower().replace("’", "'")
+    return name.strip().lower().replace("’", "’")
+
+
+def _fetch_layer_info(cursor, table_name: str) -> dict:
+    """Return styles and attribute details (titleColumn, summaryColumn) for a map layer table."""
+    styles = []
+    try:
+        cursor.execute(
+            f"SELECT id, generated_style_name, color_by, data_type, layer_name "
+            f"FROM {MAP_DB_SCHEMA}.style_metadata "
+            "WHERE layer_table_name = %s AND is_active = TRUE ORDER BY id",
+            (table_name,),
+        )
+        for s in cursor.fetchall():
+            color_by = s["color_by"] or ""
+            style_name = s["generated_style_name"] or f"{table_name}_{color_by}_style"
+            style_title = " ".join(w.capitalize() for w in color_by.replace("_", " ").split())
+            styles.append({
+                "styleName": style_name,
+                "styleTitle": style_title,
+                "styleType": s["data_type"] or "unknown",
+                "colorBy": color_by,
+                "styleId": s["id"],
+            })
+    except Exception:
+        pass
+
+    title_column = None
+    summary_columns: list[str] = []
+    try:
+        cursor.execute(
+            """
+            SELECT column_name,
+                   CASE WHEN data_type IN ('character varying', 'varchar', 'text', 'char')
+                        THEN true ELSE false END AS is_categorical
+            FROM information_schema.columns
+            WHERE table_schema = %s
+              AND table_name = %s
+              AND column_name NOT IN ('geom', 'geometry', 'the_geom', 'id', 'gid', 'ogc_fid', 'dataset_id')
+            ORDER BY ordinal_position
+            """,
+            (MAP_DB_SCHEMA, table_name),
+        )
+        for col in cursor.fetchall():
+            col_name = col["column_name"]
+            summary_columns.append(col_name)
+            if title_column is None and col["is_categorical"]:
+                title_column = col_name
+        if title_column is None and summary_columns:
+            title_column = summary_columns[0]
+        summary_columns = summary_columns[:10]
+    except Exception:
+        pass
+
+    return {
+        "styles": styles,
+        "titleColumn": title_column,
+        "summaryColumn": summary_columns,
+    }
 
 
 def _is_cpmp_botanical_participant(participant_name: str, url: str) -> bool:
@@ -1149,6 +1207,7 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
                     "count": 0,
                     "matched_fields": [],
                     "is_occurance_available": True,
+                    **_fetch_layer_info(cursor, table_name),
                 })
                 continue
 
@@ -1189,6 +1248,7 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
                 "count": count,
                 "matched_fields": matched_fields,
                 "is_occurance_available": True,
+                **_fetch_layer_info(cursor, table_name),
             })
     finally:
         conn.close()
@@ -1240,8 +1300,9 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
         elif _is_cpmp_botanical_participant(ds, ""):
             resolved.append((ds, CPMP_BOTANICAL_SEARCH_URL))
 
-    # --- Occurrence flags from DB (fast lookup, done before streaming) ---
+    # --- Occurrence flags + styles from DB (fast lookup, done before streaming) ---
     occurrence_flags: dict[str, bool] = {}
+    participant_layer_info: dict[str, dict] = {}
     if resolved:
         conn = get_connection()
         try:
@@ -1252,11 +1313,24 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
                     (name,),
                 )
                 row = cursor.fetchone()
-                occurrence_flags[name] = (
+                is_occ = (
                     bool(row["is_occurance_available"])
                     if row and row.get("is_occurance_available") is not None
                     else False
                 )
+                occurrence_flags[name] = is_occ
+                if is_occ:
+                    cursor.execute(
+                        f"SELECT geoserver_name FROM {MAP_DB_SCHEMA}.metadata "
+                        "WHERE LOWER(name_of_dataset) = LOWER(%s) LIMIT 1",
+                        (name,),
+                    )
+                    meta_row = cursor.fetchone()
+                    if meta_row and meta_row.get("geoserver_name"):
+                        gn = meta_row["geoserver_name"].strip()
+                        parts = gn.split(":", 1)
+                        table_name = parts[1] if len(parts) == 2 else gn
+                        participant_layer_info[name] = _fetch_layer_info(cursor, table_name)
         finally:
             conn.close()
 
@@ -1305,6 +1379,7 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
                         "count": count,
                         "matched_fields": sorted(matched_fields_set),
                         "is_occurance_available": occurrence_flags.get(pname, False),
+                        **participant_layer_info.get(pname, {"styles": [], "titleColumn": None, "summaryColumn": []}),
                     }
                     all_results.append(entry)
                     yield f"data: {json.dumps(entry)}\n\n"
