@@ -75,6 +75,12 @@ PARTICIPANT_FRONTEND_URLS: dict[str, str] = {
     "Rasashastra: A Database of Metals and Minerals used in Ayurveda": "https://rasashastra.tdu.edu.in/mm_api/metals/details?drugId=",
 }
 
+# Maps federation participant names to their style_metadata layer_table_name,
+# used when no matching row exists in the metadata table.
+PARTICIPANT_LAYER_TABLE: dict[str, str] = {
+    "CPMP Botanical Source": "cpmp",
+}
+
 # Schema that holds the map module's dataset tables (upload_logs, metadata, and
 # the dynamic per-dataset tables registered via map_module_backend).
 MAP_DB_SCHEMA = os.getenv("MAP_DB_SCHEMA", "public")
@@ -1331,6 +1337,7 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
                 )
                 occurrence_flags[name] = is_occ
                 if is_occ:
+                    table_name = None
                     cursor.execute(
                         f"SELECT geoserver_name FROM {MAP_DB_SCHEMA}.metadata "
                         "WHERE LOWER(name_of_dataset) = LOWER(%s) LIMIT 1",
@@ -1341,6 +1348,9 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
                         gn = meta_row["geoserver_name"].strip()
                         parts = gn.split(":", 1)
                         table_name = parts[1] if len(parts) == 2 else gn
+                    elif name in PARTICIPANT_LAYER_TABLE:
+                        table_name = PARTICIPANT_LAYER_TABLE[name]
+                    if table_name:
                         participant_layer_info[name] = _fetch_layer_info(cursor, table_name)
         finally:
             conn.close()
