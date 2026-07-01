@@ -1044,6 +1044,12 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
 
     valid_datasets = [name for (name, _url) in resolved_participants] + list(map_dataset_results.keys())
 
+    results = {
+        pname: pdata
+        for pname, pdata in results.items()
+        if any(pdata["field_results"][f].get("results") for f in pdata["field_results"])
+    }
+
     return {
         "category": payload.category,
         "dataset": payload.dataset,
@@ -1284,9 +1290,10 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
 
     if cached is not None:
         async def _stream_cached():
-            for entry in cached:
+            hits = [e for e in cached if e.get("count", 0) > 0]
+            for entry in hits:
                 yield f"data: {json.dumps(entry)}\n\n"
-            yield f"event: done\ndata: {json.dumps({'search_text': search_text, 'total': len(cached), 'cached': True})}\n\n"
+            yield f"event: done\ndata: {json.dumps({'search_text': search_text, 'total': len(hits), 'cached': True})}\n\n"
         return StreamingResponse(_stream_cached(), media_type="text/event-stream")
 
     # --- Resolve federation participants ---
@@ -1361,9 +1368,12 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
                             if _value_contains(value, search_lower):
                                 matched_fields_set.add(key)
 
+                    if count == 0:
+                        continue
+
                     entry = {
                         "dataset_name": pname,
-                        "available": count > 0,
+                        "available": True,
                         "count": count,
                         "matched_fields": sorted(matched_fields_set),
                         "is_occurance_available": occurrence_flags.get(pname, False),
@@ -1371,8 +1381,10 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
                     all_results.append(entry)
                     yield f"data: {json.dumps(entry)}\n\n"
 
-        # Map datasets — emit after federation results
+        # Map datasets — emit after federation results (skip empty)
         for r in map_results:
+            if r.get("count", 0) == 0:
+                continue
             all_results.append(r)
             yield f"data: {json.dumps(r)}\n\n"
 
