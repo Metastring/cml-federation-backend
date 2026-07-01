@@ -11,7 +11,7 @@ def get_federated_sources():
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute(
-            "SELECT dataset_name, source_api FROM public.federated_sources ORDER BY id"
+            "SELECT dataset_name, source_api, source_curl FROM public.federated_sources ORDER BY id"
         )
         rows = cursor.fetchall()
         return {"sources": [dict(r) for r in rows]}
