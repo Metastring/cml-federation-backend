@@ -1319,7 +1319,6 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
                     if row and row.get("is_occurance_available") is not None
                     else False
                 )
-                occurrence_flags[name] = is_occ
         finally:
             conn.close()
 
