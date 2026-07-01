@@ -909,25 +909,44 @@ async def _fetch_map_dataset_results(
         conn.close()
 
 
+# Maps CPMP API matchedWith values (normalised: lowercase, spaces/underscores removed)
+# to the ontology field names used across all federated datasets.
+_CPMP_MATCHED_FIELD_MAP: dict[str, str] = {
+    "commonname":          "vernacular_name_common_names",
+    "commonnames":         "vernacular_name_common_names",
+    "vernacularname":      "vernacular_name_common_names",
+    "scientificname":      "scientific_name",
+    "taxonname":           "scientific_name",
+    "tradename":           "trade_name",
+}
+
+
 def _cpmp_distribute_results(field_results: dict, item: dict, participant_name: str) -> None:
     """Distribute CPMP Botanical results into per-field buckets using matchedWith.
 
-    The CPMP API is a keyword search that returns a matchedWith value indicating
-    which column matched. We map that raw API field name through the ontology map
-    so the bucket keys match the ontology field names used by other datasets.
+    CPMP returns matchedWith values like "common name" or "scientific name".
+    These are normalised and looked up first in _CPMP_MATCHED_FIELD_MAP, then in
+    the ontology map loaded from dataset_mapping, so bucket keys match the field
+    names used by TMPI and other datasets.
+    matchedWith is stripped from result objects before returning.
     """
     field_map = _DATASET_ONTOLOGY_MAP.get(participant_name, {})
     error = item.get("error")
     for result in (item.get("results") or []):
         raw_matched = result.get("matchedWith") or ""
-        if raw_matched:
-            field_key = field_map.get(_norm_field_key(raw_matched), raw_matched)
-        else:
-            field_key = "results"
+        norm = _norm_field_key(raw_matched)
+        field_key = (
+            _CPMP_MATCHED_FIELD_MAP.get(norm)
+            or field_map.get(norm)
+            or raw_matched
+            or "results"
+        )
         field_key = _canonical_field_name(field_key) or field_key
+        # Strip matchedWith — it's a CPMP internal field, not a data column
+        clean_result = {k: v for k, v in result.items() if k != "matchedWith"}
         if field_key not in field_results:
             field_results[field_key] = {"results": [], "error": None}
-        field_results[field_key]["results"].append(result)
+        field_results[field_key]["results"].append(clean_result)
     if error:
         for fk in field_results:
             if field_results[fk]["error"] is None:
