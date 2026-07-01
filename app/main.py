@@ -909,6 +909,31 @@ async def _fetch_map_dataset_results(
         conn.close()
 
 
+def _cpmp_distribute_results(field_results: dict, item: dict, participant_name: str) -> None:
+    """Distribute CPMP Botanical results into per-field buckets using matchedWith.
+
+    The CPMP API is a keyword search that returns a matchedWith value indicating
+    which column matched. We map that raw API field name through the ontology map
+    so the bucket keys match the ontology field names used by other datasets.
+    """
+    field_map = _DATASET_ONTOLOGY_MAP.get(participant_name, {})
+    error = item.get("error")
+    for result in (item.get("results") or []):
+        raw_matched = result.get("matchedWith") or ""
+        if raw_matched:
+            field_key = field_map.get(_norm_field_key(raw_matched), raw_matched)
+        else:
+            field_key = "results"
+        field_key = _canonical_field_name(field_key) or field_key
+        if field_key not in field_results:
+            field_results[field_key] = {"results": [], "error": None}
+        field_results[field_key]["results"].append(result)
+    if error:
+        for fk in field_results:
+            if field_results[fk]["error"] is None:
+                field_results[fk]["error"] = error
+
+
 @app.post("/federated-search")
 async def federated_search(payload: FederatedSearchRequest = Body(...)):
     # Check category
@@ -1020,13 +1045,13 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
                 "is_occurance_available": occurrence_flags.get(pname, False),
             }
         if _is_cpmp_botanical_participant(pname, item["api_url"]):
-            response_field = CPMP_BOTANICAL_FEDERATED_FIELD
+            _cpmp_distribute_results(results[pname]["field_results"], item, pname)
         else:
             response_field = _canonical_field_name(item["field"])
-        results[pname]["field_results"][response_field] = {
-            "results": item["results"],
-            "error": item.get("error")
-        }
+            results[pname]["field_results"][response_field] = {
+                "results": item["results"],
+                "error": item.get("error")
+            }
 
     # Merge in local map dataset results (datasets not in PARTICIPANTS)
     for ds_name, map_res in map_dataset_results.items():
@@ -1055,17 +1080,7 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
         "dataset": payload.dataset,
         "valid_datasets": valid_datasets,
         "invalid_datasets": invalid_datasets,
-        "fields": (
-            [CPMP_BOTANICAL_FEDERATED_FIELD]
-            if payload.fields
-            and resolved_participants
-            and all(
-                _is_cpmp_botanical_participant(name, url)
-                for (name, url) in resolved_participants
-            )
-            and not map_dataset_results
-            else [_canonical_field_name(f) for f in payload.fields]
-        ),
+        "fields": [_canonical_field_name(f) for f in payload.fields],
         "search_text": payload.search_text,
         "results": results
     }
@@ -1652,13 +1667,13 @@ async def federated_search_with_ontology(payload: FederatedSearchRequest = Body(
                 "is_occurance_available": occurrence_flags.get(pname, False),
             }
         if _is_cpmp_botanical_participant(pname, item["api_url"]):
-            response_field = CPMP_BOTANICAL_FEDERATED_FIELD
+            _cpmp_distribute_results(results[pname]["field_results"], item, pname)
         else:
             response_field = _canonical_field_name(item["field"])
-        results[pname]["field_results"][response_field] = {
-            "results": item["results"],
-            "error": item.get("error"),
-        }
+            results[pname]["field_results"][response_field] = {
+                "results": item["results"],
+                "error": item.get("error"),
+            }
 
     # Merge local map dataset results
     for ds_name, map_res in map_dataset_results.items():
@@ -1689,17 +1704,7 @@ async def federated_search_with_ontology(payload: FederatedSearchRequest = Body(
         "dataset": payload.dataset,
         "valid_datasets": valid_datasets,
         "invalid_datasets": invalid_datasets,
-        "fields": (
-            [CPMP_BOTANICAL_FEDERATED_FIELD]
-            if active_fields
-            and resolved_participants
-            and all(
-                _is_cpmp_botanical_participant(name, url)
-                for name, url in resolved_participants
-            )
-            and not map_dataset_results
-            else [_canonical_field_name(f) for f in active_fields]
-        ),
+        "fields": [_canonical_field_name(f) for f in active_fields],
         "search_text": payload.search_text,
         "results": results,
     }
@@ -1862,13 +1867,13 @@ async def federated_search_with_strict_ontology_check(payload: FederatedSearchRe
                 "is_occurance_available": occurrence_flags.get(pname, False),
             }
         if _is_cpmp_botanical_participant(pname, item["api_url"]):
-            response_field = CPMP_BOTANICAL_FEDERATED_FIELD
+            _cpmp_distribute_results(results[pname]["field_results"], item, pname)
         else:
             response_field = _canonical_field_name(item["field"])
-        results[pname]["field_results"][response_field] = {
-            "results": item["results"],
-            "error": item.get("error"),
-        }
+            results[pname]["field_results"][response_field] = {
+                "results": item["results"],
+                "error": item.get("error"),
+            }
 
     for ds_name, map_res in map_dataset_results.items():
         fields_for_ds = [
@@ -1905,17 +1910,7 @@ async def federated_search_with_strict_ontology_check(payload: FederatedSearchRe
         "valid_datasets": valid_datasets,
         "invalid_datasets": invalid_datasets,
         "rejected_fields": rejected_fields,
-        "fields": (
-            [CPMP_BOTANICAL_FEDERATED_FIELD]
-            if active_fields
-            and resolved_participants
-            and all(
-                _is_cpmp_botanical_participant(name, url)
-                for name, url in resolved_participants
-            )
-            and not map_dataset_results
-            else [_canonical_field_name(f) for f in active_fields]
-        ),
+        "fields": [_canonical_field_name(f) for f in active_fields],
         "search_text": payload.search_text,
         "results": results,
     }
