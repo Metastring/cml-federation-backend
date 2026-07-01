@@ -20,6 +20,7 @@ from app.endpoints import dataset_details
 from app.endpoints import ontology
 from app.endpoints import cphr_ontology
 from app.endpoints import cphr_search
+from app.endpoints import federated_sources
 from psycopg2.extras import RealDictCursor
 
 
@@ -49,6 +50,7 @@ app.include_router(ontology.router)
 app.include_router(ontology.biodiversity_router)
 app.include_router(cphr_ontology.router)
 app.include_router(cphr_search.router)
+app.include_router(federated_sources.router)
 
 # Participant API endpoints
 CPMP_BOTANICAL_SEARCH_URL = "https://cpmp.tdu.edu.in/api/species/search/v2"
@@ -841,8 +843,9 @@ async def _fetch_map_dataset_results(
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         cursor.execute(
-            f"SELECT geoserver_name FROM {MAP_DB_SCHEMA}.metadata "
-            "WHERE LOWER(name_of_dataset) = LOWER(%s) LIMIT 1",
+            f"SELECT m.geoserver_name FROM {MAP_DB_SCHEMA}.map_layer_info m "
+            f"JOIN {MAP_DB_SCHEMA}.dataset_master d ON d.dataset_id = m.dataset_id "
+            "WHERE LOWER(d.title) = LOWER(%s) LIMIT 1",
             (dataset_name,),
         )
         row = cursor.fetchone()
@@ -1143,9 +1146,10 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
         display_names: dict[str, str] = {}
         try:
             cursor.execute(
-                f"SELECT geoserver_name, name_of_dataset "
-                f"FROM {MAP_DB_SCHEMA}.metadata "
-                "WHERE geoserver_name IS NOT NULL"
+                f"SELECT m.geoserver_name, d.title AS name_of_dataset "
+                f"FROM {MAP_DB_SCHEMA}.map_layer_info m "
+                f"JOIN {MAP_DB_SCHEMA}.dataset_master d ON d.dataset_id = m.dataset_id "
+                "WHERE m.geoserver_name IS NOT NULL"
             )
             for row in cursor.fetchall():
                 gn = (row["geoserver_name"] or "").strip()
@@ -1339,8 +1343,9 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
                 if is_occ:
                     table_name = None
                     cursor.execute(
-                        f"SELECT geoserver_name FROM {MAP_DB_SCHEMA}.metadata "
-                        "WHERE LOWER(name_of_dataset) = LOWER(%s) LIMIT 1",
+                        f"SELECT m.geoserver_name FROM {MAP_DB_SCHEMA}.map_layer_info m "
+                        f"JOIN {MAP_DB_SCHEMA}.dataset_master d ON d.dataset_id = m.dataset_id "
+                        "WHERE LOWER(d.title) = LOWER(%s) LIMIT 1",
                         (name,),
                     )
                     meta_row = cursor.fetchone()
