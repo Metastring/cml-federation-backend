@@ -1015,7 +1015,7 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
         pname = item["participant_name"]
         if pname not in results:
             results[pname] = {
-                "api_url": PARTICIPANT_FRONTEND_URLS.get(pname, item["api_url"]),
+                "api_url": item["api_url"],
                 "field_results": {},
                 "is_occurance_available": occurrence_flags.get(pname, False),
             }
@@ -1043,12 +1043,6 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
         }
 
     valid_datasets = [name for (name, _url) in resolved_participants] + list(map_dataset_results.keys())
-
-    if payload.display_fields:
-        for pname in results:
-            results[pname]["field_results"] = _apply_display_fields(
-                results[pname]["field_results"], payload.display_fields
-            )
 
     return {
         "category": payload.category,
@@ -1216,7 +1210,7 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
                     "available": False,
                     "count": 0,
                     "matched_fields": [],
-                    "is_occurrence_available": True,
+                    "is_occurance_available": True,
                 })
                 continue
 
@@ -1247,29 +1241,16 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
                 count = 0
                 matched_cols = []
 
-            layer_info = _fetch_layer_info(cursor, table_name)
-            style_by_color = {
-                s["colorBy"].lower(): s
-                for s in layer_info.get("styles", [])
-                if s.get("colorBy")
-            }
-            matched_fields = []
-            for col in matched_cols:
-                field_name = field_display.get(col.lower(), col)
-                s = style_by_color.get(col.lower())
-                mf: dict = {"field": field_name}
-                if s:
-                    mf["styleName"] = s["styleName"]
-                    mf["styleTitle"] = s["styleTitle"]
-                    mf["styleId"] = s["styleId"]
-                matched_fields.append(mf)
+            matched_fields = [
+                field_display.get(col.lower(), col) for col in matched_cols
+            ]
 
             results.append({
                 "dataset_name": display_name or table_name,
                 "available": count > 0,
                 "count": count,
                 "matched_fields": matched_fields,
-                "is_occurrence_available": True,
+                "is_occurance_available": True,
             })
     finally:
         conn.close()
@@ -1284,7 +1265,7 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
 
     Response: text/event-stream
       Each event:  data: <JSON object with dataset_name, available, count,
-                         matched_fields, is_occurrence_available>
+                         matched_fields, is_occurance_available>
       Final event: event: done
                    data: {"search_text": "...", "total": N, "cached": bool}
 
@@ -1321,9 +1302,8 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
         elif _is_cpmp_botanical_participant(ds, ""):
             resolved.append((ds, CPMP_BOTANICAL_SEARCH_URL))
 
-    # --- Occurrence flags + styles from DB (fast lookup, done before streaming) ---
+    # --- Occurrence flags from DB (fast lookup, done before streaming) ---
     occurrence_flags: dict[str, bool] = {}
-    participant_layer_info: dict[str, dict] = {}
     if resolved:
         conn = get_connection()
         try:
@@ -1334,29 +1314,12 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
                     (name,),
                 )
                 row = cursor.fetchone()
-                is_occ = (
+                occurrence_flags[name] = (
                     bool(row["is_occurance_available"])
                     if row and row.get("is_occurance_available") is not None
                     else False
                 )
                 occurrence_flags[name] = is_occ
-                if is_occ:
-                    table_name = None
-                    cursor.execute(
-                        f"SELECT m.geoserver_name FROM {MAP_DB_SCHEMA}.map_layer_info m "
-                        f"JOIN {MAP_DB_SCHEMA}.dataset_master d ON d.dataset_id = m.dataset_id "
-                        "WHERE LOWER(d.title) = LOWER(%s) LIMIT 1",
-                        (name,),
-                    )
-                    meta_row = cursor.fetchone()
-                    if meta_row and meta_row.get("geoserver_name"):
-                        gn = meta_row["geoserver_name"].strip()
-                        parts = gn.split(":", 1)
-                        table_name = parts[1] if len(parts) == 2 else gn
-                    elif name in PARTICIPANT_LAYER_TABLE:
-                        table_name = PARTICIPANT_LAYER_TABLE[name]
-                    if table_name:
-                        participant_layer_info[name] = _fetch_layer_info(cursor, table_name)
         finally:
             conn.close()
 
@@ -1399,28 +1362,12 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
                             if _value_contains(value, search_lower):
                                 matched_fields_set.add(key)
 
-                    layer_info = participant_layer_info.get(pname, {})
-                    style_by_color = {
-                        s["colorBy"].lower(): s
-                        for s in layer_info.get("styles", [])
-                        if s.get("colorBy")
-                    }
-                    matched_fields_list = []
-                    for field in sorted(matched_fields_set):
-                        s = style_by_color.get(field.lower())
-                        mf: dict = {"field": field}
-                        if s:
-                            mf["styleName"] = s["styleName"]
-                            mf["styleTitle"] = s["styleTitle"]
-                            mf["styleId"] = s["styleId"]
-                        matched_fields_list.append(mf)
-
                     entry = {
                         "dataset_name": pname,
                         "available": count > 0,
                         "count": count,
-                        "matched_fields": matched_fields_list,
-                        "is_occurrence_available": occurrence_flags.get(pname, False),
+                        "matched_fields": sorted(matched_fields_set),
+                        "is_occurance_available": occurrence_flags.get(pname, False),
                     }
                     all_results.append(entry)
                     yield f"data: {json.dumps(entry)}\n\n"
@@ -1689,7 +1636,7 @@ async def federated_search_with_ontology(payload: FederatedSearchRequest = Body(
         pname = item["participant_name"]
         if pname not in results:
             results[pname] = {
-                "api_url": PARTICIPANT_FRONTEND_URLS.get(pname, item["api_url"]),
+                "api_url": item["api_url"],
                 "field_results": {},
                 "is_occurance_available": occurrence_flags.get(pname, False),
             }
@@ -1725,12 +1672,6 @@ async def federated_search_with_ontology(payload: FederatedSearchRequest = Body(
         [name for name, _ in resolved_participants] + list(map_dataset_results.keys())
     )
     active_fields = [f for f in payload.fields if f in field_to_dataset_titles]
-
-    if payload.display_fields:
-        for pname in results:
-            results[pname]["field_results"] = _apply_display_fields(
-                results[pname]["field_results"], payload.display_fields
-            )
 
     return {
         "category": payload.category,
