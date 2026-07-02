@@ -989,7 +989,7 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
     if not resolved_participants and not map_dataset_results:
         raise HTTPException(status_code=400, detail="No valid datasets provided.")
 
-    # Look up is_occurance_availabe flag from dataset_master for each
+    # Look up is_occurrence_available flag from dataset_master for each
     # resolved dataset title, so we can surface it in the federated
     # results without changing the overall response shape.
     occurrence_flags: dict[str, bool] = {}
@@ -1000,7 +1000,7 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
         for ds_name in all_ds_names:
             cursor.execute(
                 """
-                SELECT is_occurance_available
+                SELECT is_occurrence_available
                 FROM dataset_master
                 WHERE LOWER(title) = LOWER(%s)
                 LIMIT 1;
@@ -1008,8 +1008,8 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
                 (ds_name,),
             )
             row = cursor.fetchone()
-            if row is not None and "is_occurance_available" in row and row["is_occurance_available"] is not None:
-                occurrence_flags[ds_name] = bool(row["is_occurance_available"])
+            if row is not None and "is_occurrence_available" in row and row["is_occurrence_available"] is not None:
+                occurrence_flags[ds_name] = bool(row["is_occurrence_available"])
             else:
                 occurrence_flags[ds_name] = True  # local map datasets are occurrence-capable
     finally:
@@ -1061,7 +1061,7 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
             results[pname] = {
                 "api_url": item["api_url"],
                 "field_results": {},
-                "is_occurance_available": occurrence_flags.get(pname, False),
+                "is_occurrence_available": occurrence_flags.get(pname, False),
             }
         if _is_cpmp_botanical_participant(pname, item["api_url"]):
             _cpmp_distribute_results(results[pname]["field_results"], item, pname)
@@ -1083,7 +1083,7 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
         results[ds_name] = {
             "api_url": f"local:{map_res.get('table_name', ds_name)}",
             "field_results": field_results,
-            "is_occurance_available": occurrence_flags.get(ds_name, True),
+            "is_occurrence_available": occurrence_flags.get(ds_name, True),
         }
 
     valid_datasets = [name for (name, _url) in resolved_participants] + list(map_dataset_results.keys())
@@ -1250,7 +1250,7 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
                     "available": False,
                     "count": 0,
                     "matched_fields": [],
-                    "is_occurance_available": True,
+                    "is_occurrence_available": True,
                 })
                 continue
 
@@ -1281,16 +1281,40 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
                 count = 0
                 matched_cols = []
 
-            matched_fields = [
-                field_display.get(col.lower(), col) for col in matched_cols
-            ]
+            styles_by_col: dict[str, dict] = {}
+            if matched_cols:
+                try:
+                    cursor.execute(
+                        f"SELECT DISTINCT ON (color_by) color_by, generated_style_name, id "
+                        f"FROM {MAP_DB_SCHEMA}.style_metadata "
+                        "WHERE layer_table_name = %s AND color_by = ANY(%s) AND is_active = TRUE "
+                        "ORDER BY color_by, id",
+                        (table_name, matched_cols),
+                    )
+                    styles_by_col = {row["color_by"]: row for row in cursor.fetchall()}
+                except Exception:
+                    styles_by_col = {}
+
+            matched_fields = []
+            for col in matched_cols:
+                field_label = field_display.get(col.lower(), col)
+                style_row = styles_by_col.get(col)
+                matched_fields.append({
+                    "field": field_label,
+                    "styleName": (
+                        style_row["generated_style_name"] or f"{table_name}_{col}_style"
+                        if style_row else None
+                    ),
+                    "styleTitle": field_label if style_row else None,
+                    "styleId": style_row["id"] if style_row else None,
+                })
 
             results.append({
                 "dataset_name": display_name or table_name,
                 "available": count > 0,
                 "count": count,
                 "matched_fields": matched_fields,
-                "is_occurance_available": True,
+                "is_occurrence_available": True,
             })
     finally:
         conn.close()
@@ -1305,7 +1329,7 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
 
     Response: text/event-stream
       Each event:  data: <JSON object with dataset_name, available, count,
-                         matched_fields, is_occurance_available>
+                         matched_fields, is_occurrence_available>
       Final event: event: done
                    data: {"search_text": "...", "total": N, "cached": bool}
 
@@ -1351,13 +1375,13 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             for name, _ in resolved:
                 cursor.execute(
-                    "SELECT is_occurance_available FROM dataset_master WHERE LOWER(title) = LOWER(%s) LIMIT 1;",
+                    "SELECT is_occurrence_available FROM dataset_master WHERE LOWER(title) = LOWER(%s) LIMIT 1;",
                     (name,),
                 )
                 row = cursor.fetchone()
                 occurrence_flags[name] = (
-                    bool(row["is_occurance_available"])
-                    if row and row.get("is_occurance_available") is not None
+                    bool(row["is_occurrence_available"])
+                    if row and row.get("is_occurrence_available") is not None
                     else False
                 )
         finally:
@@ -1410,7 +1434,7 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
                         "available": True,
                         "count": count,
                         "matched_fields": sorted(matched_fields_set),
-                        "is_occurance_available": occurrence_flags.get(pname, False),
+                        "is_occurrence_available": occurrence_flags.get(pname, False),
                     }
                     all_results.append(entry)
                     yield f"data: {json.dumps(entry)}\n\n"
@@ -1635,14 +1659,14 @@ async def federated_search_with_ontology(payload: FederatedSearchRequest = Body(
         for ds_name in all_ds_names:
             cursor.execute(
                 """
-                SELECT is_occurance_available FROM dataset_master
+                SELECT is_occurrence_available FROM dataset_master
                 WHERE LOWER(title) = LOWER(%s) LIMIT 1;
                 """,
                 (ds_name,),
             )
             row = cursor.fetchone()
-            if row is not None and row.get("is_occurance_available") is not None:
-                occurrence_flags[ds_name] = bool(row["is_occurance_available"])
+            if row is not None and row.get("is_occurrence_available") is not None:
+                occurrence_flags[ds_name] = bool(row["is_occurrence_available"])
             else:
                 occurrence_flags[ds_name] = True
     finally:
@@ -1683,7 +1707,7 @@ async def federated_search_with_ontology(payload: FederatedSearchRequest = Body(
             results[pname] = {
                 "api_url": item["api_url"],
                 "field_results": {},
-                "is_occurance_available": occurrence_flags.get(pname, False),
+                "is_occurrence_available": occurrence_flags.get(pname, False),
             }
         if _is_cpmp_botanical_participant(pname, item["api_url"]):
             _cpmp_distribute_results(results[pname]["field_results"], item, pname)
@@ -1710,7 +1734,7 @@ async def federated_search_with_ontology(payload: FederatedSearchRequest = Body(
         results[ds_name] = {
             "api_url": f"local:{map_res.get('table_name', ds_name)}",
             "field_results": field_results,
-            "is_occurance_available": occurrence_flags.get(ds_name, True),
+            "is_occurrence_available": occurrence_flags.get(ds_name, True),
         }
 
     valid_datasets = (
@@ -1836,14 +1860,14 @@ async def federated_search_with_strict_ontology_check(payload: FederatedSearchRe
         for ds_name in all_ds_names:
             cursor.execute(
                 """
-                SELECT is_occurance_available FROM dataset_master
+                SELECT is_occurrence_available FROM dataset_master
                 WHERE LOWER(title) = LOWER(%s) LIMIT 1;
                 """,
                 (ds_name,),
             )
             row = cursor.fetchone()
-            if row is not None and row.get("is_occurance_available") is not None:
-                occurrence_flags[ds_name] = bool(row["is_occurance_available"])
+            if row is not None and row.get("is_occurrence_available") is not None:
+                occurrence_flags[ds_name] = bool(row["is_occurrence_available"])
             else:
                 occurrence_flags[ds_name] = True
     finally:
@@ -1883,7 +1907,7 @@ async def federated_search_with_strict_ontology_check(payload: FederatedSearchRe
             results[pname] = {
                 "api_url": PARTICIPANT_FRONTEND_URLS.get(pname, item["api_url"]),
                 "field_results": {},
-                "is_occurance_available": occurrence_flags.get(pname, False),
+                "is_occurrence_available": occurrence_flags.get(pname, False),
             }
         if _is_cpmp_botanical_participant(pname, item["api_url"]):
             _cpmp_distribute_results(results[pname]["field_results"], item, pname)
@@ -1909,7 +1933,7 @@ async def federated_search_with_strict_ontology_check(payload: FederatedSearchRe
         results[ds_name] = {
             "api_url": f"local:{map_res.get('table_name', ds_name)}",
             "field_results": field_results,
-            "is_occurance_available": occurrence_flags.get(ds_name, True),
+            "is_occurrence_available": occurrence_flags.get(ds_name, True),
         }
 
     valid_datasets = (
