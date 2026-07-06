@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     environment {
-        WORK_DIR = '/home/metastring/src/central_server'
+        WORK_DIR = '/home/metastring/src/github/cml/cml-backend'
     }
 
     stages {
@@ -37,7 +37,7 @@ pipeline {
         stage('Restart Backend Service') {
             steps {
                 sh '''
-                sudo systemctl restart central_server
+                sudo systemctl restart cml_backend
                 '''
             }
         }
