@@ -131,16 +131,19 @@ def _load_dataset_ontology_maps() -> None:
 def _map_row_to_ontology(row: dict, dataset_name: str) -> dict:
     """Re-key a result row using ontology field names from dataset_mapping.
 
-    Fields whose lowercase name ends with 'id' are always kept as-is (IDs).
-    Every other field is looked up in the dataset's ontology map; if no mapping
-    exists the original key is preserved so no data is silently dropped.
+    Fields whose lowercase name ends with 'id' (plantId, taxonId,
+    officialDrugId, ...) are unified under a single "id" key, since every
+    dataset's own identifier column name is otherwise an implementation
+    detail the frontend shouldn't need to know per-dataset. Every other
+    field is looked up in the dataset's ontology map; if no mapping exists
+    the original key is preserved so no data is silently dropped.
     """
     field_map = _DATASET_ONTOLOGY_MAP.get(dataset_name, {})
     result: dict = {}
     for key, value in row.items():
         k_lower = str(key).lower()
         if k_lower.endswith("id") or k_lower == "id":
-            result[key] = value
+            result["id"] = value
         else:
             ontology_key = field_map.get(_norm_field_key(key), key)
             result[ontology_key] = value
@@ -439,6 +442,62 @@ def _canonical_field_name(field: str) -> str:
     return field
 
 
+# Dataset-agnostic fallback for resolving a requested field alias to the
+# shared ontology field name, used when a participant has no matching
+# dataset_mapping row (e.g. its raw field is a singular/plural variant that
+# doesn't normalise to the same key, such as CPMP's "commonNames" vs. the
+# request alias "common_name"). Kept in code rather than dataset_mapping so
+# every participant a given alias reasonably applies to picks it up.
+_GLOBAL_FIELD_ALIAS_MAP: dict[str, str] = {
+    "commonname": "vernacular_name_common_names",
+    "commonnames": "vernacular_name_common_names",
+    "vernacularname": "vernacular_name_common_names",
+    "vernacularnamecommonnames": "vernacular_name_common_names",
+    "scientificname": "plant_species",
+    "taxonname": "plant_species",
+    "plantspecies": "plant_species",
+    "tradename": "trade_name",
+}
+
+
+def _response_field_key(participant_name: str, field: str) -> str:
+    """Resolve a requested field to the key actually used inside each result
+    row for this dataset, so a field_results bucket's key always matches the
+    column name found in its rows (e.g. request field "common_name" ->
+    row/bucket key "vernacular_name_common_names" once ontology-mapped).
+
+    Tries the dataset's own ontology_mapping first, then the dataset-agnostic
+    alias fallback, then falls back to the canonical field name unchanged.
+    """
+    canonical = _canonical_field_name(field)
+    if not canonical:
+        return canonical
+    norm = _norm_field_key(canonical)
+    field_map = _DATASET_ONTOLOGY_MAP.get(participant_name, {})
+    return field_map.get(norm) or _GLOBAL_FIELD_ALIAS_MAP.get(norm) or canonical
+
+
+def _dataset_result_fields(pdata: dict) -> list[str]:
+    """Union of non-id column names present across a dataset's result rows,
+    in first-seen order, so the frontend can build columns per dataset
+    instead of relying on a single global field list.
+    """
+    seen: set[str] = set()
+    fields: list[str] = []
+    for field_data in pdata.get("field_results", {}).values():
+        for row in field_data.get("results") or []:
+            if not isinstance(row, dict):
+                continue
+            for key in row:
+                k_lower = str(key).lower()
+                if k_lower.endswith("id") or k_lower == "id":
+                    continue
+                if key not in seen:
+                    seen.add(key)
+                    fields.append(key)
+    return fields
+
+
 def _apply_display_fields(field_results: dict, display_fields: list[str]) -> dict:
     """Re-key field_results by display_fields instead of search field names.
 
@@ -464,6 +523,53 @@ def _apply_display_fields(field_results: dict, display_fields: list[str]) -> dic
     return {
         df: {"results": all_results, "error": combined_error}
         for df in display_fields
+    }
+
+
+def _merge_matched_fields(a: dict | None, b: dict | None) -> dict:
+    """Union two {tabular, map} matched_fields dicts from /pre-federated-search.
+
+    "tabular" holds plain field-name strings (federation participants);
+    "map" holds style-info dicts {field, styleName, styleTitle, styleId}
+    (local map datasets). Kept separate so the frontend never has to
+    inspect an entry's shape before deciding how to render it.
+    """
+    a = a or {}
+    b = b or {}
+
+    tabular_seen: set[str] = set()
+    tabular: list[str] = []
+    for field in list(a.get("tabular") or []) + list(b.get("tabular") or []):
+        key = str(field).strip().lower()
+        if key and key not in tabular_seen:
+            tabular_seen.add(key)
+            tabular.append(field)
+
+    map_fields: dict[str, dict] = {}
+    for item in list(a.get("map") or []) + list(b.get("map") or []):
+        key = str(item.get("field", "")).strip().lower()
+        if key and key not in map_fields:
+            map_fields[key] = item
+
+    return {"tabular": tabular, "map": list(map_fields.values())}
+
+
+def _merge_dataset_entries(participant_entry: dict, map_entry: dict) -> dict:
+    """Combine a federation-participant result and a local map-dataset result
+    for the same dataset_name into a single /pre-federated-search entry."""
+    return {
+        "dataset_name": participant_entry["dataset_name"],
+        "available": True,
+        "count": participant_entry.get("count", 0) + map_entry.get("count", 0),
+        "matched_fields": _merge_matched_fields(
+            participant_entry.get("matched_fields"), map_entry.get("matched_fields")
+        ),
+        "is_occurrence_available": bool(
+            participant_entry.get("is_occurrence_available") or map_entry.get("is_occurrence_available")
+        ),
+        "dataset_geoserver_name": (
+            participant_entry.get("dataset_geoserver_name") or map_entry.get("dataset_geoserver_name")
+        ),
     }
 
 
@@ -732,15 +838,7 @@ async def fetch_from_participant(client, participant_name: str, url: str, field:
                 if not isinstance(item, dict):
                     continue
 
-                # Flatten list-valued fields to comma-separated strings
-                flat: dict = {}
-                for k, v in item.items():
-                    if isinstance(v, list):
-                        flat[k] = ", ".join(str(x) for x in v if x) or None
-                    else:
-                        flat[k] = v
-
-                normalised_items.append(_map_row_to_ontology(flat, participant_name))
+                normalised_items.append(_map_row_to_ontology(item, participant_name))
 
             return {
                 "participant_name": participant_name,
@@ -921,36 +1019,32 @@ _CPMP_MATCHED_FIELD_MAP: dict[str, str] = {
 }
 
 
-def _cpmp_distribute_results(field_results: dict, item: dict, participant_name: str) -> None:
-    """Distribute CPMP Botanical results into per-field buckets using matchedWith.
+def _cpmp_distribute_results(
+    field_results: dict,
+    item: dict,
+    participant_name: str,
+    requested_fields: list[str] | None = None,
+) -> None:
+    """Populate field_results with the full CPMP result set under every
+    requested field bucket, matching the pattern used by TMPI and other
+    datasets (each row carries every non-id column, replicated per field so
+    the frontend can rely on the same field_results shape everywhere).
 
-    CPMP returns matchedWith values like "common name" or "scientific name".
-    These are normalised and looked up first in _CPMP_MATCHED_FIELD_MAP, then in
-    the ontology map loaded from dataset_mapping, so bucket keys match the field
-    names used by TMPI and other datasets.
-    matchedWith is stripped from result objects before returning.
+    matchedWith is stripped from result objects before returning — it's a
+    CPMP-internal match indicator, not a data column.
     """
-    field_map = _DATASET_ONTOLOGY_MAP.get(participant_name, {})
     error = item.get("error")
-    for result in (item.get("results") or []):
-        raw_matched = result.get("matchedWith") or ""
-        norm = _norm_field_key(raw_matched)
-        field_key = (
-            _CPMP_MATCHED_FIELD_MAP.get(norm)
-            or field_map.get(norm)
-            or raw_matched
-            or "results"
-        )
-        field_key = _canonical_field_name(field_key) or field_key
-        # Strip matchedWith — it's a CPMP internal field, not a data column
-        clean_result = {k: v for k, v in result.items() if k != "matchedWith"}
-        if field_key not in field_results:
-            field_results[field_key] = {"results": [], "error": None}
-        field_results[field_key]["results"].append(clean_result)
-    if error:
-        for fk in field_results:
-            if field_results[fk]["error"] is None:
-                field_results[fk]["error"] = error
+    clean_results = [
+        {k: v for k, v in result.items() if k != "matchedWith"}
+        for result in (item.get("results") or [])
+    ]
+    field_keys = (
+        [_response_field_key(participant_name, f) if f else "results" for f in requested_fields]
+        if requested_fields
+        else ["results"]
+    )
+    for field_key in field_keys:
+        field_results[field_key] = {"results": clean_results, "error": error}
 
 
 @app.post("/federated-search")
@@ -1059,14 +1153,14 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
         pname = item["participant_name"]
         if pname not in results:
             results[pname] = {
-                "api_url": item["api_url"],
+                "api_url": PARTICIPANT_FRONTEND_URLS.get(pname, item["api_url"]),
                 "field_results": {},
                 "is_occurrence_available": occurrence_flags.get(pname, False),
             }
         if _is_cpmp_botanical_participant(pname, item["api_url"]):
-            _cpmp_distribute_results(results[pname]["field_results"], item, pname)
+            _cpmp_distribute_results(results[pname]["field_results"], item, pname, payload.fields)
         else:
-            response_field = _canonical_field_name(item["field"])
+            response_field = _response_field_key(pname, item["field"])
             results[pname]["field_results"][response_field] = {
                 "results": item["results"],
                 "error": item.get("error")
@@ -1076,7 +1170,7 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
     for ds_name, map_res in map_dataset_results.items():
         field_results = {}
         for f in payload.fields or [""]:
-            field_results[_canonical_field_name(f) if f else "results"] = {
+            field_results[_response_field_key(ds_name, f) if f else "results"] = {
                 "results": map_res.get("results", []),
                 "error": map_res.get("error"),
             }
@@ -1093,13 +1187,14 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
         for pname, pdata in results.items()
         if any(pdata["field_results"][f].get("results") for f in pdata["field_results"])
     }
+    for pdata in results.values():
+        pdata["fields"] = _dataset_result_fields(pdata)
 
     return {
         "category": payload.category,
         "dataset": payload.dataset,
         "valid_datasets": valid_datasets,
         "invalid_datasets": invalid_datasets,
-        "fields": [_canonical_field_name(f) for f in payload.fields],
         "search_text": payload.search_text,
         "results": results
     }
@@ -1249,8 +1344,9 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
                     "dataset_name": display_name or table_name,
                     "available": False,
                     "count": 0,
-                    "matched_fields": [],
+                    "matched_fields": {"tabular": [], "map": []},
                     "is_occurrence_available": True,
+                    "dataset_geoserver_name": table_name,
                 })
                 continue
 
@@ -1295,11 +1391,11 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
                 except Exception:
                     styles_by_col = {}
 
-            matched_fields = []
+            map_matched_fields = []
             for col in matched_cols:
                 field_label = field_display.get(col.lower(), col)
                 style_row = styles_by_col.get(col)
-                matched_fields.append({
+                map_matched_fields.append({
                     "field": field_label,
                     "styleName": (
                         style_row["generated_style_name"] or f"{table_name}_{col}_style"
@@ -1313,8 +1409,9 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
                 "dataset_name": display_name or table_name,
                 "available": count > 0,
                 "count": count,
-                "matched_fields": matched_fields,
+                "matched_fields": {"tabular": [], "map": map_matched_fields},
                 "is_occurrence_available": True,
+                "dataset_geoserver_name": table_name,
             })
     finally:
         conn.close()
@@ -1368,7 +1465,11 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
             resolved.append((ds, CPMP_BOTANICAL_SEARCH_URL))
 
     # --- Occurrence flags from DB (fast lookup, done before streaming) ---
+    # dataset_geoserver_names mirrors the "name" field returned by the
+    # cphr-map-module /layers1 API (geoserver_name with the workspace
+    # prefix, e.g. "metastring:cpmp", stripped down to "cpmp").
     occurrence_flags: dict[str, bool] = {}
+    dataset_geoserver_names: dict[str, str] = {}
     if resolved:
         conn = get_connection()
         try:
@@ -1384,6 +1485,18 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
                     if row and row.get("is_occurrence_available") is not None
                     else False
                 )
+
+                if occurrence_flags[name]:
+                    cursor.execute(
+                        f"SELECT m.geoserver_name FROM {MAP_DB_SCHEMA}.map_layer_info m "
+                        f"JOIN {MAP_DB_SCHEMA}.dataset_master d ON d.dataset_id = m.dataset_id "
+                        "WHERE LOWER(d.title) = LOWER(%s) LIMIT 1;",
+                        (name,),
+                    )
+                    geo_row = cursor.fetchone()
+                    geoserver_name = (geo_row["geoserver_name"] or "").strip() if geo_row else ""
+                    if geoserver_name:
+                        dataset_geoserver_names[name] = geoserver_name.split(":")[-1] if ":" in geoserver_name else geoserver_name
         finally:
             conn.close()
 
@@ -1391,10 +1504,20 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
     map_results: list[dict] = await asyncio.to_thread(
         _get_map_datasets_availability, search_text, payload.dataset
     )
+    # Lookup of non-empty map results by normalized dataset name, so federation
+    # participants that are ALSO available locally (e.g. a dataset with both a
+    # PARTICIPANTS API entry and a map_layer_info-backed table) can be merged
+    # into a single entry instead of streaming as two separate rows.
+    map_results_by_name = {
+        _normalize_dataset_name(r["dataset_name"]): r
+        for r in map_results
+        if r.get("count", 0) > 0
+    }
 
     async def _stream_live():
         search_lower = search_text.lower()
         all_results: list[dict] = []
+        merged_names: set[str] = set()
 
         # Federation participants — emit each result as soon as it arrives
         if resolved:
@@ -1415,13 +1538,30 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
                     for result in results_list:
                         if not isinstance(result, dict):
                             continue
-                        # CPMP API reports the matched field directly — use it
-                        if result.get("matched_with"):
-                            matched_fields_set.add(result["matched_with"])
+                        # CPMP reports the matched field via a scalar matchedWith
+                        # (e.g. "common name"); TMPI's findstring API reports it as
+                        # a list (e.g. ["Common Name"]) — rather than the search
+                        # text appearing literally in a value (it may match via an
+                        # internal synonym lookup). Map each to the real field key.
+                        raw_matched = result.get("matchedWith")
+                        if raw_matched:
+                            matched_values = (
+                                raw_matched if isinstance(raw_matched, list) else [raw_matched]
+                            )
+                            for mv in matched_values:
+                                if not mv:
+                                    continue
+                                norm = _norm_field_key(str(mv))
+                                field_key = (
+                                    _CPMP_MATCHED_FIELD_MAP.get(norm)
+                                    or _DATASET_ONTOLOGY_MAP.get(pname, {}).get(norm)
+                                    or str(mv)
+                                )
+                                matched_fields_set.add(field_key)
                             continue
                         for key, value in result.items():
                             k_lower = key.lower()
-                            if k_lower.endswith("_id") or k_lower in ("id", "matched_with"):
+                            if k_lower.endswith("_id") or k_lower in ("id", "matchedwith"):
                                 continue
                             if _value_contains(value, search_lower):
                                 matched_fields_set.add(key)
@@ -1433,15 +1573,26 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
                         "dataset_name": pname,
                         "available": True,
                         "count": count,
-                        "matched_fields": sorted(matched_fields_set),
+                        "matched_fields": {"tabular": sorted(matched_fields_set), "map": []},
                         "is_occurrence_available": occurrence_flags.get(pname, False),
+                        "dataset_geoserver_name": dataset_geoserver_names.get(pname),
                     }
+
+                    norm = _normalize_dataset_name(pname)
+                    map_match = map_results_by_name.get(norm)
+                    if map_match:
+                        entry = _merge_dataset_entries(entry, map_match)
+                        merged_names.add(norm)
+
                     all_results.append(entry)
                     yield f"data: {json.dumps(entry)}\n\n"
 
-        # Map datasets — emit after federation results (skip empty)
+        # Map datasets — emit after federation results (skip empty, skip
+        # datasets already merged into a federation-participant entry above)
         for r in map_results:
             if r.get("count", 0) == 0:
+                continue
+            if _normalize_dataset_name(r["dataset_name"]) in merged_names:
                 continue
             all_results.append(r)
             yield f"data: {json.dumps(r)}\n\n"
@@ -1599,7 +1750,6 @@ async def federated_search_with_ontology(payload: FederatedSearchRequest = Body(
             "dataset": payload.dataset,
             "valid_datasets": [],
             "invalid_datasets": payload.dataset,
-            "fields": payload.fields,
             "search_text": payload.search_text,
             "results": {},
         }
@@ -1642,7 +1792,6 @@ async def federated_search_with_ontology(payload: FederatedSearchRequest = Body(
             "dataset": payload.dataset,
             "valid_datasets": [],
             "invalid_datasets": list(all_ontology_datasets),
-            "fields": [f for f in payload.fields if f in field_to_dataset_titles],
             "search_text": payload.search_text,
             "results": {},
         }
@@ -1705,14 +1854,14 @@ async def federated_search_with_ontology(payload: FederatedSearchRequest = Body(
         pname = item["participant_name"]
         if pname not in results:
             results[pname] = {
-                "api_url": item["api_url"],
+                "api_url": PARTICIPANT_FRONTEND_URLS.get(pname, item["api_url"]),
                 "field_results": {},
                 "is_occurrence_available": occurrence_flags.get(pname, False),
             }
         if _is_cpmp_botanical_participant(pname, item["api_url"]):
-            _cpmp_distribute_results(results[pname]["field_results"], item, pname)
+            _cpmp_distribute_results(results[pname]["field_results"], item, pname, payload.fields)
         else:
-            response_field = _canonical_field_name(item["field"])
+            response_field = _response_field_key(pname, item["field"])
             results[pname]["field_results"][response_field] = {
                 "results": item["results"],
                 "error": item.get("error"),
@@ -1726,7 +1875,7 @@ async def federated_search_with_ontology(payload: FederatedSearchRequest = Body(
         ] or list(field_to_dataset_titles.keys())
         field_results: dict = {}
         for f in fields_for_ds:
-            key = _canonical_field_name(f) if f else "results"
+            key = _response_field_key(ds_name, f) if f else "results"
             field_results[key] = {
                 "results": map_res.get("results", []),
                 "error": map_res.get("error"),
@@ -1740,14 +1889,15 @@ async def federated_search_with_ontology(payload: FederatedSearchRequest = Body(
     valid_datasets = (
         [name for name, _ in resolved_participants] + list(map_dataset_results.keys())
     )
-    active_fields = [f for f in payload.fields if f in field_to_dataset_titles]
+
+    for pdata in results.values():
+        pdata["fields"] = _dataset_result_fields(pdata)
 
     return {
         "category": payload.category,
         "dataset": payload.dataset,
         "valid_datasets": valid_datasets,
         "invalid_datasets": invalid_datasets,
-        "fields": [_canonical_field_name(f) for f in active_fields],
         "search_text": payload.search_text,
         "results": results,
     }
@@ -1800,7 +1950,6 @@ async def federated_search_with_strict_ontology_check(payload: FederatedSearchRe
             "valid_datasets": [],
             "invalid_datasets": payload.dataset,
             "rejected_fields": rejected_fields,
-            "fields": [],
             "search_text": payload.search_text,
             "results": {},
         }
@@ -1843,7 +1992,6 @@ async def federated_search_with_strict_ontology_check(payload: FederatedSearchRe
             "valid_datasets": [],
             "invalid_datasets": list(all_ontology_datasets),
             "rejected_fields": rejected_fields,
-            "fields": [f for f in payload.fields if f in field_to_dataset_titles],
             "search_text": payload.search_text,
             "results": {},
         }
@@ -1910,9 +2058,9 @@ async def federated_search_with_strict_ontology_check(payload: FederatedSearchRe
                 "is_occurrence_available": occurrence_flags.get(pname, False),
             }
         if _is_cpmp_botanical_participant(pname, item["api_url"]):
-            _cpmp_distribute_results(results[pname]["field_results"], item, pname)
+            _cpmp_distribute_results(results[pname]["field_results"], item, pname, payload.fields)
         else:
-            response_field = _canonical_field_name(item["field"])
+            response_field = _response_field_key(pname, item["field"])
             results[pname]["field_results"][response_field] = {
                 "results": item["results"],
                 "error": item.get("error"),
@@ -1925,7 +2073,7 @@ async def federated_search_with_strict_ontology_check(payload: FederatedSearchRe
         ] or list(field_to_dataset_titles.keys())
         field_results: dict = {}
         for f in fields_for_ds:
-            key = _canonical_field_name(f) if f else "results"
+            key = _response_field_key(ds_name, f) if f else "results"
             field_results[key] = {
                 "results": map_res.get("results", []),
                 "error": map_res.get("error"),
@@ -1939,7 +2087,6 @@ async def federated_search_with_strict_ontology_check(payload: FederatedSearchRe
     valid_datasets = (
         [name for name, _ in resolved_participants] + list(map_dataset_results.keys())
     )
-    active_fields = [f for f in payload.fields if f in field_to_dataset_titles]
 
     if payload.display_fields:
         for pname in results:
@@ -1947,13 +2094,15 @@ async def federated_search_with_strict_ontology_check(payload: FederatedSearchRe
                 results[pname]["field_results"], payload.display_fields
             )
 
+    for pdata in results.values():
+        pdata["fields"] = _dataset_result_fields(pdata)
+
     return {
         "category": payload.category,
         "dataset": payload.dataset,
         "valid_datasets": valid_datasets,
         "invalid_datasets": invalid_datasets,
         "rejected_fields": rejected_fields,
-        "fields": [_canonical_field_name(f) for f in active_fields],
         "search_text": payload.search_text,
         "results": results,
     }
