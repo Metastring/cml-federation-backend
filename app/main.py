@@ -74,7 +74,8 @@ PARTICIPANT_FRONTEND_URLS: dict[str, str] = {
     "CPMP Botanical Source": "https://cpmp.tdu.edu.in/explore/plant_species?id=",
     "CPMP Drug Source": "https://cpmp.tdu.edu.in/explore/drugs?id=",
     "Traded Medicinal Plants of India (TMPI)": "https://tradedmedicinalplants.org/plant/",
-    "Rasashastra: A Database of Metals and Minerals used in Ayurveda": "https://rasashastra.tdu.edu.in/mm_api/metals/details?drugId=",
+    "Rasashastra: A Database of Metals and Minerals used in Ayurveda": "https://rasashastra.tdu.edu.in/pages/browseMetals?drugId=",
+    "Ayurahaar – The Ahara & Nutrition Portal": "https://ayurahaar.org/ingredients",
 }
 
 # Maps federation participant names to their style_metadata layer_table_name,
@@ -422,6 +423,23 @@ async def _fetch_cpmp_botanical_source(
     }
 
 
+def _flatten_dosage_and_treatment(dosage: dict) -> str | None:
+    """Flatten Rasashastra's nested dosageAndTreatment object (sub-keys like
+    dose, anupana, effects_of_Raw_Drug_Use, toxic_Effects) into a single
+    display string, matching how other participants' list/nested fields
+    (e.g. CPMP's commonNames) are joined into plain strings for the frontend.
+    """
+    if not isinstance(dosage, dict) or not dosage:
+        return None
+
+    parts = [
+        f"{key.replace('_', ' ').strip()}: {value}"
+        for key, value in dosage.items()
+        if value
+    ]
+    return "; ".join(parts) or None
+
+
 def _canonical_field_name(field: str) -> str:
     """Return the canonical field name used in responses.
 
@@ -569,6 +587,9 @@ def _merge_dataset_entries(participant_entry: dict, map_entry: dict) -> dict:
         ),
         "dataset_geoserver_name": (
             participant_entry.get("dataset_geoserver_name") or map_entry.get("dataset_geoserver_name")
+        ),
+        "category": (
+            participant_entry.get("category") or map_entry.get("category")
         ),
     }
 
@@ -783,7 +804,7 @@ async def fetch_from_participant(client, participant_name: str, url: str, field:
 
                 nomenclature = item.get("nomenclature") or {}
                 modern_info = item.get("modernInformation") or {}
-                dosage = item.get("dosageAndTreatment") or {}
+                dosage = _flatten_dosage_and_treatment(item.get("dosageAndTreatment") or {})
 
                 # Flatten nested Rasashastra structure then map to ontology
                 raw_row = {
@@ -1273,11 +1294,13 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
 
         # Build table_name → display_name from metadata.geoserver_name
         display_names: dict[str, str] = {}
+        table_categories: dict[str, str] = {}
         try:
             cursor.execute(
-                f"SELECT m.geoserver_name, d.title AS name_of_dataset "
+                f"SELECT m.geoserver_name, d.title AS name_of_dataset, c.category_name "
                 f"FROM {MAP_DB_SCHEMA}.map_layer_info m "
                 f"JOIN {MAP_DB_SCHEMA}.dataset_master d ON d.dataset_id = m.dataset_id "
+                "LEFT JOIN category_master c ON c.category_id = d.category_id "
                 "WHERE m.geoserver_name IS NOT NULL"
             )
             for row in cursor.fetchall():
@@ -1286,6 +1309,8 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
                 table_key = parts[1] if len(parts) == 2 else gn
                 if table_key and row["name_of_dataset"]:
                     display_names[table_key] = row["name_of_dataset"]
+                if table_key and row["category_name"]:
+                    table_categories[table_key] = row["category_name"]
         except Exception:
             pass
 
@@ -1347,6 +1372,7 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
                     "matched_fields": {"tabular": [], "map": []},
                     "is_occurrence_available": True,
                     "dataset_geoserver_name": table_name,
+                    "category": table_categories.get(table_name),
                 })
                 continue
 
@@ -1412,6 +1438,7 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
                 "matched_fields": {"tabular": [], "map": map_matched_fields},
                 "is_occurrence_available": True,
                 "dataset_geoserver_name": table_name,
+                "category": table_categories.get(table_name),
             })
     finally:
         conn.close()
@@ -1426,7 +1453,7 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
 
     Response: text/event-stream
       Each event:  data: <JSON object with dataset_name, available, count,
-                         matched_fields, is_occurrence_available>
+                         matched_fields, is_occurrence_available, category>
       Final event: event: done
                    data: {"search_text": "...", "total": N, "cached": bool}
 
@@ -1470,13 +1497,17 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
     # prefix, e.g. "metastring:cpmp", stripped down to "cpmp").
     occurrence_flags: dict[str, bool] = {}
     dataset_geoserver_names: dict[str, str] = {}
+    dataset_categories: dict[str, str] = {}
     if resolved:
         conn = get_connection()
         try:
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             for name, _ in resolved:
                 cursor.execute(
-                    "SELECT is_occurrence_available FROM dataset_master WHERE LOWER(title) = LOWER(%s) LIMIT 1;",
+                    "SELECT d.is_occurrence_available, c.category_name "
+                    "FROM dataset_master d "
+                    "LEFT JOIN category_master c ON c.category_id = d.category_id "
+                    "WHERE LOWER(d.title) = LOWER(%s) LIMIT 1;",
                     (name,),
                 )
                 row = cursor.fetchone()
@@ -1485,6 +1516,8 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
                     if row and row.get("is_occurrence_available") is not None
                     else False
                 )
+                if row and row.get("category_name"):
+                    dataset_categories[name] = row["category_name"]
 
                 if occurrence_flags[name]:
                     cursor.execute(
@@ -1576,6 +1609,7 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
                         "matched_fields": {"tabular": sorted(matched_fields_set), "map": []},
                         "is_occurrence_available": occurrence_flags.get(pname, False),
                         "dataset_geoserver_name": dataset_geoserver_names.get(pname),
+                        "category": dataset_categories.get(pname),
                     }
 
                     norm = _normalize_dataset_name(pname)
