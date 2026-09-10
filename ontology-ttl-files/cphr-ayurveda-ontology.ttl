@@ -1,0 +1,1025 @@
+@prefix cphr:    <http://cml.org/ontology/ayurveda#> .
+@prefix dwc:     <http://rs.tdwg.org/dwc/terms/> .
+@prefix dcterms: <http://purl.org/dc/terms/> .
+@prefix skos:    <http://www.w3.org/2004/02/skos/core#> .
+@prefix foaf:    <http://xmlns.com/foaf/0.1/> .
+@prefix owl:     <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:     <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:    <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:     <http://www.w3.org/2001/XMLSchema#> .
+
+#################################################################
+# Ontology Declaration  (BioPortal "Details" tab — see hand-note 3)
+#
+# Header is `cphr: a owl:Ontology` (empty local name) so the file-based
+# read API (cphr_ontology_service._load_ttl_entities) picks these up as
+# the "ontology" entity and GET /ontology/summary can surface title /
+# description / created. Admin fields below (acronym, visibility,
+# status, categories, versioning) are the BioPortal summary metadata.
+#################################################################
+
+cphr: a owl:Ontology ;
+    rdfs:label "CPHR Ayurveda Ontology" ;
+    dcterms:title "CPHR Ayurveda Ontology" ;
+    dcterms:description "Ontology for Ayurvedic medicinal plants and their classical pharmacology (Dravyaguna). Covers the botanical taxon (Darwin Core-aligned), the substance/drug (Dravya) derived from it, and the classical property set — Rasa, Guna, Veerya, Vipaka, Karma, Prabhava, Dosha action and Varga. Modelled after BioPortal ontologies (nested class tree, per-class definitions and synonyms). Loaded as named graph http://cml.org/ontology/ayurveda in Fuseki." ;
+    rdfs:comment "Nested-tree Ayurveda ontology: PlantSpecies + Dravya + Disease(stub), aligned with Darwin Core for taxonomy and Charaka Samhita / Nighantus / AyurAhaar for therapeutic properties." ;
+    cphr:acronym "AYU" ;
+    cphr:visibility "Public" ;
+    cphr:status "Staging" ;
+    cphr:hasCategory "Plants" ;
+    cphr:hasCategory "Drugs" ;
+    cphr:hasCategory "Disease" ;
+    dcterms:created "2026-09-02" ;
+    dcterms:modified "2026-09-02" ;
+    owl:versionInfo "0.2.0-staging" ;
+    owl:versionIRI <http://cml.org/ontology/ayurveda/0.2.0> ;
+    dcterms:publisher "Metastring Foundation" ;
+    dcterms:creator "Metastring Foundation — CPHR team" ;
+    dcterms:contributor "CPHR ontology working group" ;
+    dcterms:bibliographicCitation "Charaka Samhita (Dravyaguna sections)" ;
+    dcterms:bibliographicCitation "Sushruta Samhita" ;
+    dcterms:bibliographicCitation "Bhavaprakasha Nighantu" ;
+    dcterms:bibliographicCitation "Ayurvedic Pharmacopoeia of India (API), Govt. of India" ;
+    dcterms:bibliographicCitation "Dravyaguna Vijnana — P. V. Sharma" ;
+    dcterms:bibliographicCitation "AyurAhaar ingredient/trait database" ;
+    dcterms:bibliographicCitation "Traded Medicinal Plants of India — Goraya & Ved, 2017 (tradedmedicinalplants.org)" ;
+    dcterms:source "BioPortal (https://bioportal.bioontology.org/) — structure reference, esp. MeSH class tree and ontology Details tab" ;
+    rdfs:seeAlso <http://rs.tdwg.org/dwc/> .
+
+# --- Admin annotation properties used on the ontology node above -------------
+# Declared so the file is OWL-clean; not returned by /ontology/properties
+# (the read API only lists owl:Class / owl:ObjectProperty / owl:DatatypeProperty).
+
+cphr:acronym a owl:AnnotationProperty ;
+    rdfs:label "acronym" ;
+    rdfs:comment "Short ontology code shown in BioPortal-style listings. Value: AYU." .
+
+cphr:visibility a owl:AnnotationProperty ;
+    rdfs:label "visibility" ;
+    rdfs:comment "Access level for the published ontology. Value: Public." .
+
+cphr:status a owl:AnnotationProperty ;
+    rdfs:label "status" ;
+    rdfs:comment "Lifecycle stage. One of: Staging / Beta / Production / Retired. Currently: Staging." .
+
+cphr:hasCategory a owl:AnnotationProperty ;
+    rdfs:label "has category" ;
+    rdfs:comment "BioPortal-style subject category tag for the whole ontology. Values: Plants, Drugs, Disease." .
+
+cphr:designNote a owl:AnnotationProperty ;
+    rdfs:label "design note" ;
+    rdfs:comment "Modelling rationale / open question for a class or property. Surfaced by GET /ontology/classes/{name} as design_notes." .
+
+#################################################################
+# ORGANISATIONAL ROOT
+#################################################################
+
+cphr:AyurvedaEntity a owl:Class ;
+    rdfs:label "Ayurveda Entity" ;
+    skos:prefLabel "Ayurveda Entity"@en ;
+    skos:definition "Abstract root of the CPHR Ayurveda class tree. Every top-level branch (Plant Species, Dravya, Disease, Dosha) is a subclass. Organisational only — nothing is asserted to be a direct instance."@en ;
+    rdfs:comment "Abstract root of the Ayurveda class tree (organisational)." ;
+    cphr:designNote "Kept so the class list renders as a single tree; drop it if the frontend prefers multiple top nodes like MeSH." .
+
+#################################################################
+# BRANCH 1 — PLANT SPECIES  (hand-note 3: Concept / TaxonConcept /
+# Location / Document sub-tree; hand-note 2: sibling of Drugs)
+#################################################################
+
+cphr:PlantSpecies a owl:Class ;
+    rdfs:subClassOf cphr:AyurvedaEntity ;
+    owl:equivalentClass dwc:Taxon ;
+    rdfs:label "Plant Species" ;
+    skos:prefLabel "Plant Species"@en ;
+    skos:altLabel "Medicinal Plant"@en ;
+    skos:altLabel "Oshadhi"@sa ;
+    skos:definition "A botanical taxon (normally at species rank) that is used, or documented, as an Ayurvedic medicinal plant. Carries nomenclature, taxonomy, habitat, observation and source-document information. Aligned with dwc:Taxon."@en ;
+    rdfs:comment "A medicinal plant taxon. Aligned with dwc:Taxon." .
+
+cphr:Concept a owl:Class ;
+    rdfs:subClassOf cphr:PlantSpecies ;
+    rdfs:label "Concept" ;
+    skos:prefLabel "Concept"@en ;
+    skos:altLabel "Species Concept"@en ;
+    skos:definition "A described concept about a plant species — the bundle of observational and ecological knowledge (habitat, how it was observed/recorded) attached to the taxon, as distinct from its pure nomenclature."@en ;
+    rdfs:comment "Observational / ecological concept attached to a plant species (habitat, observation method)." .
+
+cphr:Habitat a owl:Class ;
+    rdfs:subClassOf cphr:Concept ;
+    rdfs:label "Habitat" ;
+    skos:prefLabel "Habitat"@en ;
+    skos:definition "The environment in which the plant naturally grows — description, altitude range and agro-climatic zone. Aligned with dwc:habitat."@en ;
+    rdfs:comment "Where the plant grows. Aligned with dwc:habitat." .
+
+cphr:ObservationMethod a owl:Class ;
+    rdfs:subClassOf cphr:Concept ;
+    rdfs:label "Observation Method" ;
+    skos:prefLabel "Observation Method"@en ;
+    skos:altLabel "Basis of Record"@en ;
+    skos:definition "How the knowledge about this plant was obtained — field observation, herbarium specimen, literature/classical text, or database record. Aligned with dwc:basisOfRecord + dwc:samplingProtocol."@en ;
+    rdfs:comment "How the plant record was obtained (field / specimen / literature / database)." .
+
+cphr:TaxonConcept a owl:Class ;
+    rdfs:subClassOf cphr:PlantSpecies ;
+    rdfs:label "Taxon Concept" ;
+    skos:prefLabel "Taxon Concept"@en ;
+    skos:altLabel "Taxonomic Backbone Entry"@en ;
+    skos:definition "The normalised taxonomic identity of the plant per an external backbone (POWO / WCVP / GBIF): accepted name usage, authorship, parent taxon, rank and nomenclatural status."@en ;
+    rdfs:comment "Normalised taxonomy for the plant (accepted name, authorship, parent, rank, status)." ;
+    cphr:designNote "Hand-note 3 lists Class/Family/Genus/Species under Taxon Concept. Those rank names are kept as literal properties on cphr:PlantSpecies (flat source data) AND as cphr:TaxonRank individuals reached via cphr:hasRank." .
+
+cphr:TaxonRank a owl:Class ;
+    rdfs:subClassOf cphr:TaxonConcept ;
+    rdfs:label "Taxon Rank" ;
+    skos:prefLabel "Taxon Rank"@en ;
+    skos:definition "The rank of a taxon in the Linnaean hierarchy (kingdom, order, class, family, genus, species, variety). Controlled vocabulary. Aligned with dwc:taxonRank."@en ;
+    rdfs:comment "Rank of a taxon (kingdom/order/class/family/genus/species/...). Aligned with dwc:taxonRank." .
+
+cphr:TaxonomicStatus a owl:Class ;
+    rdfs:subClassOf cphr:TaxonConcept ;
+    rdfs:label "Taxonomic Status" ;
+    skos:prefLabel "Taxonomic Status"@en ;
+    skos:definition "The nomenclatural standing of a name — accepted, synonym, unresolved or misapplied. Controlled vocabulary. Aligned with dwc:taxonomicStatus."@en ;
+    rdfs:comment "Whether a name is accepted, a synonym, unresolved or misapplied. Aligned with dwc:taxonomicStatus." .
+
+cphr:Location a owl:Class ;
+    rdfs:subClassOf cphr:PlantSpecies ;
+    rdfs:label "Location" ;
+    skos:prefLabel "Location"@en ;
+    skos:altLabel "Place"@en ;
+    skos:definition "A geographic place associated with the plant — locality, state/province, country and decimal coordinates. Aligned with the Darwin Core Location class."@en ;
+    rdfs:comment "Geographic place associated with the plant. Aligned with dwc Location." .
+
+cphr:Document a owl:Class ;
+    rdfs:subClassOf cphr:PlantSpecies ;
+    rdfs:label "Document" ;
+    skos:prefLabel "Document"@en ;
+    skos:altLabel "Reference"@en ;
+    skos:altLabel "Source"@en ;
+    skos:definition "A source document that describes or evidences the plant — a Nighantu passage, a monograph, a dataset record or a web resource. Aligned with dcterms:BibliographicResource."@en ;
+    rdfs:comment "A source document / reference for the plant. Aligned with dcterms:BibliographicResource." .
+
+cphr:WebPage a owl:Class ;
+    rdfs:subClassOf cphr:Document ;
+    rdfs:label "Web Page" ;
+    skos:prefLabel "Web Page"@en ;
+    skos:altLabel "URL"@en ;
+    skos:definition "An online resource for the plant — a species page on POWO, GBIF, tradedmedicinalplants.org or AyurAhaar. Holds the URL and the date it was accessed."@en ;
+    rdfs:comment "An online resource (species page / database link) for the plant." .
+
+#################################################################
+# BRANCH 2 — DRAVYA (DRUG / SUBSTANCE)  (hand-note 2: Drugs ->
+# Dravyaguna {Rasa, Vipaka, Virya} and Source Type {plant, metal &
+# minerals, animal})
+#################################################################
+
+cphr:Dravya a owl:Class ;
+    rdfs:subClassOf cphr:AyurvedaEntity ;
+    rdfs:label "Dravya" ;
+    skos:prefLabel "Dravya (Substance / Drug)"@en ;
+    skos:altLabel "Drug"@en ;
+    skos:altLabel "Substance"@en ;
+    skos:altLabel "Aushadha Dravya"@sa ;
+    skos:altLabel "Bheshaja"@sa ;
+    skos:definition "Any substance used as an Ayurvedic medicine, characterised by its Dravyaguna (Rasa, Guna, Veerya, Vipaka, Prabhava, Karma), its Dosha action, its Varga and its source (plant, mineral/metal or animal). A plant-origin Dravya is linked to its botanical taxon via cphr:hasBotanicalSource."@en ;
+    rdfs:comment "An Ayurvedic medicinal substance — carrier of Dravyaguna, Karma, Dosha action, Varga and a source type." ;
+    cphr:designNote "Domain of hasRasa/hasGuna/hasVeerya/hasVipaka/hasKarma/hasDoshaAction/belongsToVarga/hasUsedPart moved here from cphr:PlantSpecies (Ayurveda ascribes these to the dravya, not the taxon). AyurAhaar loader can mint one cphr:Dravya per plant row and attach both the taxonomy (hasBotanicalSource) and the property set." .
+
+cphr:Dravyaguna a owl:Class ;
+    rdfs:subClassOf cphr:Dravya ;
+    rdfs:label "Dravyaguna" ;
+    skos:prefLabel "Dravyaguna (Pharmacological Property Set)"@en ;
+    skos:altLabel "Guna-Karma Profile"@en ;
+    skos:definition "The classical pharmacological profile of a substance: its Rasa (taste), Guna (qualities), Veerya (potency), Vipaka (post-digestive taste), Prabhava (specific effect) and Karma (actions). Grouping node; individual property types are its subclasses."@en ;
+    rdfs:comment "The classical pharmacological property set of a Dravya (Rasa/Guna/Veerya/Vipaka/Prabhava/Karma)." ;
+    cphr:designNote "Rasa/Guna/Veerya/Vipaka/Karma/Prabhava/DoshaAction are nested here for BioPortal-style browsing. The link from a substance to a value is the object property (hasRasa ...), not rdfs:subClassOf." .
+
+cphr:Rasa a owl:Class ;
+    rdfs:subClassOf cphr:Dravyaguna ;
+    rdfs:label "Rasa" ;
+    skos:prefLabel "Rasa (Taste)"@en ;
+    skos:altLabel "Taste"@en ;
+    skos:definition "One of the six tastes perceived on the tongue — Madhura (sweet), Amla (sour), Lavana (salty), Katu (pungent), Tikta (bitter), Kashaya (astringent). Primary organoleptic pharmacology axis in Dravyaguna."@en ;
+    rdfs:comment "Ayurvedic taste category (six Rasas)." .
+
+cphr:Guna a owl:Class ;
+    rdfs:subClassOf cphr:Dravyaguna ;
+    rdfs:label "Guna" ;
+    skos:prefLabel "Guna (Quality)"@en ;
+    skos:altLabel "Quality"@en ;
+    skos:altLabel "Gurvadi Guna"@sa ;
+    skos:definition "A physical/functional quality of a substance (the twenty Gurvadi gunas), e.g. Guru (heavy), Laghu (light), Snigdha (unctuous), Ruksha (dry), Ushna (hot), Sheeta (cold). Typically two to four per substance."@en ;
+    rdfs:comment "Ayurvedic quality/attribute (Gurvadi Guna)." .
+
+cphr:Veerya a owl:Class ;
+    rdfs:subClassOf cphr:Dravyaguna ;
+    rdfs:label "Veerya" ;
+    skos:prefLabel "Veerya (Potency)"@en ;
+    skos:altLabel "Virya"@en ;
+    skos:altLabel "Potency"@en ;
+    skos:definition "The active potency of a substance, classically reduced to two: Ushna (heating) or Sheeta (cooling). Exactly one per substance."@en ;
+    rdfs:comment "Ayurvedic potency — Ushna (hot) or Sheeta (cold)." .
+
+cphr:Vipaka a owl:Class ;
+    rdfs:subClassOf cphr:Dravyaguna ;
+    rdfs:label "Vipaka" ;
+    skos:prefLabel "Vipaka (Post-digestive Effect)"@en ;
+    skos:altLabel "Post-digestive Taste"@en ;
+    skos:definition "The taste that emerges after digestion and governs longer-term metabolic effect. Three values: Madhura, Amla, Katu. Exactly one per substance."@en ;
+    rdfs:comment "Ayurvedic post-digestive effect (Madhura / Amla / Katu)." .
+
+cphr:Karma a owl:Class ;
+    rdfs:subClassOf cphr:Dravyaguna ;
+    rdfs:label "Karma" ;
+    skos:prefLabel "Karma (Action)"@en ;
+    skos:altLabel "Therapeutic Action"@en ;
+    skos:altLabel "Pharmacological Action"@en ;
+    skos:definition "A therapeutic or physiological action attributed to a substance (e.g. Deepana — digestive stimulant, Rasayana — rejuvenative, Jwaraghna — antipyretic). Many per substance; grouped by cphr:karmaCategory. Standard alignment: Charaka Samhita."@en ;
+    rdfs:comment "Therapeutic / medicinal action of a substance (Karma), per Charaka Samhita." .
+
+cphr:Prabhava a owl:Class ;
+    rdfs:subClassOf cphr:Dravyaguna ;
+    rdfs:label "Prabhava" ;
+    skos:prefLabel "Prabhava (Specific Effect)"@en ;
+    skos:altLabel "Idiosyncratic Effect"@en ;
+    skos:definition "A specific action of a substance not explicable from its Rasa/Guna/Veerya/Vipaka — the classical 'exception' category (e.g. Danti as a purgative despite an unremarkable profile). Free-text, optional."@en ;
+    rdfs:comment "Specific/idiosyncratic effect of a substance, unexplained by its ordinary properties." ;
+    cphr:designNote "New class (not in v0.1). No fixed controlled vocabulary — captured as free text via cphr:prabhavaDescription." .
+
+cphr:DoshaAction a owl:Class ;
+    rdfs:subClassOf cphr:Dravyaguna ;
+    rdfs:label "Dosha Action" ;
+    skos:prefLabel "Dosha Action"@en ;
+    skos:altLabel "Doshaghnata"@sa ;
+    skos:definition "A reified statement of how a substance affects one Dosha: it pairs a Dosha (via cphr:onDosha) with a direction (cphr:actionType = Shamaka, pacifies / Vardhaka, aggravates). One node per Dosha affected."@en ;
+    rdfs:comment "How a substance affects one Dosha — pairs a Dosha (onDosha) with a direction (actionType: Shamaka/Vardhaka)." .
+
+cphr:Varga a owl:Class ;
+    rdfs:subClassOf cphr:Dravya ;
+    rdfs:label "Varga" ;
+    skos:prefLabel "Varga (Classification Group)"@en ;
+    skos:altLabel "Gana"@sa ;
+    skos:altLabel "Nighantu Group"@en ;
+    skos:definition "A group of substances classified together in an Ayurvedic Nighantu or Samhita (e.g. Haritakyadi Varga, Guduchyadi Varga). A substance may belong to several across texts."@en ;
+    rdfs:comment "A classification group from the Nighantus / Samhitas (e.g. Haritaki Varga)." .
+
+cphr:PlantPart a owl:Class ;
+    rdfs:subClassOf cphr:Dravya ;
+    rdfs:label "Plant Part" ;
+    skos:prefLabel "Plant Part"@en ;
+    skos:altLabel "Used Part"@en ;
+    skos:altLabel "Prayojya Anga"@sa ;
+    skos:definition "The part of a plant used to prepare the medicine — root, leaf, fruit, seed, bark, flower, rhizome, stem, latex/resin or whole plant. Relevant when the Dravya's source type is plant."@en ;
+    rdfs:comment "The part of the plant used medicinally (root/leaf/fruit/...)." .
+
+cphr:SourceType a owl:Class ;
+    rdfs:subClassOf cphr:Dravya ;
+    rdfs:label "Source Type" ;
+    skos:prefLabel "Source Type"@en ;
+    skos:altLabel "Dravya Yoni"@sa ;
+    skos:altLabel "Origin"@en ;
+    skos:definition "The origin category of a substance per classical Dravya-yoni: (1) Audbhida — plant, (2) Parthiva — metal & mineral, (3) Jangama — animal. Controlled vocabulary."@en ;
+    rdfs:comment "Origin of the substance: plant / metal & mineral / animal (Dravya Yoni)." .
+
+#################################################################
+# BRANCH 3 — DISEASE  (hand-note 3 category "Disease"; hand-note 2
+# crosses "Diseases" out — kept minimal / extension-ready)
+#################################################################
+
+cphr:Disease a owl:Class ;
+    rdfs:subClassOf cphr:AyurvedaEntity ;
+    rdfs:label "Disease" ;
+    skos:prefLabel "Disease (Roga)"@en ;
+    skos:altLabel "Roga"@sa ;
+    skos:altLabel "Vyadhi"@sa ;
+    skos:definition "An Ayurvedic disease / disorder that a Dravya may be indicated in. Stub in v0.2 — carries a name and standard codes (ICD-11, NAMASTE/NAMC) plus an etiology link. Expand when a disease dataset is in scope."@en ;
+    rdfs:comment "Ayurvedic disease/disorder (Roga). Extension-ready stub — not backed by a source table yet." ;
+    cphr:designNote "Hand-note 2 scribbles 'Diseases' out; hand-note 3 keeps 'Disease' as a category. Kept as a minimal branch so cphr:indicatedIn has a range; no controlled vocabulary loaded." .
+
+cphr:Nidana a owl:Class ;
+    rdfs:subClassOf cphr:Disease ;
+    rdfs:label "Nidana" ;
+    skos:prefLabel "Nidana (Etiology)"@en ;
+    skos:altLabel "Etiology"@en ;
+    skos:altLabel "Causative Factor"@en ;
+    skos:definition "A causative or aggravating factor of a disease (diet, conduct, season, Dosha imbalance). Stub — free-text only in v0.2."@en ;
+    rdfs:comment "Causative / aggravating factor of a disease (stub)." .
+
+#################################################################
+# CROSS-CUTTING — DOSHA  (referenced by DoshaAction.onDosha and by
+# Disease; not owned by a single branch)
+#################################################################
+
+cphr:Dosha a owl:Class ;
+    rdfs:subClassOf cphr:AyurvedaEntity ;
+    rdfs:label "Dosha" ;
+    skos:prefLabel "Dosha"@en ;
+    skos:altLabel "Bio-energy"@en ;
+    skos:altLabel "Tridosha"@sa ;
+    skos:definition "One of the three functional bio-energies of the body — Vata (movement), Pitta (transformation), Kapha (structure/cohesion). Target of a substance's Dosha action and axis of disease pathology."@en ;
+    rdfs:comment "One of the three Ayurvedic bio-energies — Vata, Pitta, Kapha." ;
+    cphr:designNote "Cross-cutting physiological concept; parented to the root rather than to Dravya or Disease." .
+
+#################################################################
+# OBJECT PROPERTIES
+#################################################################
+
+### --- Plant Species sub-tree ------------------------------------------------
+
+cphr:hasConcept a owl:ObjectProperty ;
+    rdfs:domain cphr:PlantSpecies ;
+    rdfs:range cphr:Concept ;
+    rdfs:label "has concept" ;
+    rdfs:comment "Links a plant species to its observational/ecological concept node. Cardinality: 0..1." .
+
+cphr:hasHabitat a owl:ObjectProperty ;
+    rdfs:domain cphr:Concept ;
+    rdfs:range cphr:Habitat ;
+    rdfs:label "has habitat" ;
+    rdfs:comment "The habitat(s) recorded for a plant's concept. Cardinality: many. Standard alignment: dwc:habitat." .
+
+cphr:hasObservationMethod a owl:ObjectProperty ;
+    rdfs:domain cphr:Concept ;
+    rdfs:range cphr:ObservationMethod ;
+    rdfs:label "has observation method" ;
+    rdfs:comment "How the plant's record was obtained. Cardinality: many. Standard alignment: dwc:basisOfRecord." .
+
+cphr:hasTaxonConcept a owl:ObjectProperty ;
+    rdfs:domain cphr:PlantSpecies ;
+    rdfs:range cphr:TaxonConcept ;
+    rdfs:label "has taxon concept" ;
+    rdfs:comment "Links a plant species to its normalised taxonomic-backbone entry. Cardinality: 0..1 per backbone." .
+
+cphr:hasRank a owl:ObjectProperty ;
+    rdfs:domain cphr:TaxonConcept ;
+    rdfs:range cphr:TaxonRank ;
+    rdfs:label "has rank" ;
+    rdfs:comment "The rank of the taxon concept. Cardinality: exactly 1. Standard alignment: dwc:taxonRank." .
+
+cphr:hasTaxonomicStatus a owl:ObjectProperty ;
+    rdfs:domain cphr:TaxonConcept ;
+    rdfs:range cphr:TaxonomicStatus ;
+    rdfs:label "has taxonomic status" ;
+    rdfs:comment "Nomenclatural standing of the name. Cardinality: exactly 1. Standard alignment: dwc:taxonomicStatus." .
+
+cphr:parentTaxon a owl:ObjectProperty ;
+    rdfs:domain cphr:TaxonConcept ;
+    rdfs:range cphr:TaxonConcept ;
+    rdfs:label "parent taxon" ;
+    rdfs:comment "The immediate parent in the taxonomic hierarchy. Cardinality: 0..1. Standard alignment: dwc:parentNameUsage." .
+
+cphr:hasLocation a owl:ObjectProperty ;
+    rdfs:domain cphr:PlantSpecies ;
+    rdfs:range cphr:Location ;
+    rdfs:label "has location" ;
+    rdfs:comment "A geographic place where the plant occurs or was recorded. Cardinality: many." .
+
+cphr:hasDocument a owl:ObjectProperty ;
+    rdfs:domain cphr:PlantSpecies ;
+    rdfs:range cphr:Document ;
+    rdfs:label "has document" ;
+    rdfs:comment "A source document / reference for the plant. Cardinality: many. Standard alignment: dcterms:references." .
+
+cphr:hasWebPage a owl:ObjectProperty ;
+    rdfs:domain cphr:Document ;
+    rdfs:range cphr:WebPage ;
+    rdfs:label "has web page" ;
+    rdfs:comment "An online resource attached to a document. Cardinality: many. Standard alignment: foaf:page." .
+
+### --- Dravya sub-tree ------------------------------------------------------
+
+cphr:hasBotanicalSource a owl:ObjectProperty ;
+    rdfs:domain cphr:Dravya ;
+    rdfs:range cphr:PlantSpecies ;
+    rdfs:label "has botanical source" ;
+    owl:inverseOf cphr:isBotanicalSourceOf ;
+    rdfs:comment "Links a plant-origin Dravya to the plant species it is derived from. Cardinality: one or more (a Dravya may be sourced from several accepted species)." .
+
+cphr:isBotanicalSourceOf a owl:ObjectProperty ;
+    rdfs:domain cphr:PlantSpecies ;
+    rdfs:range cphr:Dravya ;
+    rdfs:label "is botanical source of" ;
+    rdfs:comment "Inverse of cphr:hasBotanicalSource — the Dravya(s) obtained from this plant." .
+
+cphr:hasSourceType a owl:ObjectProperty ;
+    rdfs:domain cphr:Dravya ;
+    rdfs:range cphr:SourceType ;
+    rdfs:label "has source type" ;
+    rdfs:comment "The origin category of the substance — plant / metal & mineral / animal. Cardinality: exactly 1. Source: hand-note 2 (Source Type branch)." .
+
+cphr:hasDravyaguna a owl:ObjectProperty ;
+    rdfs:domain cphr:Dravya ;
+    rdfs:range cphr:Dravyaguna ;
+    rdfs:label "has dravyaguna" ;
+    rdfs:comment "Links a substance to a reified property-set node when the full Rasa/Guna/Veerya/Vipaka profile is quoted from one text. Cardinality: 0..1. Optional — most data attaches values directly via hasRasa etc." .
+
+cphr:hasRasa a owl:ObjectProperty ;
+    rdfs:domain cphr:Dravya ;
+    rdfs:range cphr:Rasa ;
+    rdfs:label "has rasa" ;
+    rdfs:comment "A substance has a Rasa (taste). Cardinality: many — e.g. Haritaki carries five of six. Source: AyurAhaar Rasa field." .
+
+cphr:hasGuna a owl:ObjectProperty ;
+    rdfs:domain cphr:Dravya ;
+    rdfs:range cphr:Guna ;
+    rdfs:label "has guna" ;
+    rdfs:comment "A substance has a Guna (quality). Cardinality: many, typically 2-4. Source: AyurAhaar Guna field." .
+
+cphr:hasVeerya a owl:ObjectProperty ;
+    rdfs:domain cphr:Dravya ;
+    rdfs:range cphr:Veerya ;
+    rdfs:label "has veerya" ;
+    rdfs:comment "A substance has a Veerya (potency). Cardinality: exactly 1 — Ushna or Sheeta. Source: AyurAhaar Veerya field." .
+
+cphr:hasVipaka a owl:ObjectProperty ;
+    rdfs:domain cphr:Dravya ;
+    rdfs:range cphr:Vipaka ;
+    rdfs:label "has vipaka" ;
+    rdfs:comment "A substance has a Vipaka (post-digestive effect). Cardinality: exactly 1 of three values. Source: AyurAhaar Vipaka field." .
+
+cphr:hasKarma a owl:ObjectProperty ;
+    rdfs:domain cphr:Dravya ;
+    rdfs:range cphr:Karma ;
+    rdfs:label "has karma" ;
+    rdfs:comment "A therapeutic action of the substance. Cardinality: many. Source: AyurAhaar Karma field; alignment Charaka Samhita." .
+
+cphr:hasPrabhava a owl:ObjectProperty ;
+    rdfs:domain cphr:Dravya ;
+    rdfs:range cphr:Prabhava ;
+    rdfs:label "has prabhava" ;
+    rdfs:comment "A specific/idiosyncratic effect of the substance. Cardinality: 0..many. New in v0.2." .
+
+cphr:hasDoshaAction a owl:ObjectProperty ;
+    rdfs:domain cphr:Dravya ;
+    rdfs:range cphr:DoshaAction ;
+    rdfs:label "has dosha action" ;
+    rdfs:comment "A substance has a Dosha Action node specifying which Dosha and in which direction. Cardinality: many — one per Dosha affected." .
+
+cphr:onDosha a owl:ObjectProperty ;
+    rdfs:domain cphr:DoshaAction ;
+    rdfs:range cphr:Dosha ;
+    rdfs:label "on dosha" ;
+    rdfs:comment "The Dosha a Dosha Action acts on (Vata/Pitta/Kapha). Paired with cphr:actionType." .
+
+cphr:belongsToVarga a owl:ObjectProperty ;
+    rdfs:domain cphr:Dravya ;
+    rdfs:range cphr:Varga ;
+    rdfs:label "belongs to varga" ;
+    rdfs:comment "A substance belongs to a Varga (classification group). Cardinality: one or more across texts. Source: AyurAhaar Varga field." .
+
+cphr:hasUsedPart a owl:ObjectProperty ;
+    rdfs:domain cphr:Dravya ;
+    rdfs:range cphr:PlantPart ;
+    rdfs:label "has used part" ;
+    rdfs:comment "The plant part(s) a plant-origin substance is prepared from. Cardinality: one or more. Source: AyurAhaar Part field." .
+
+cphr:indicatedIn a owl:ObjectProperty ;
+    rdfs:domain cphr:Dravya ;
+    rdfs:range cphr:Disease ;
+    rdfs:label "indicated in" ;
+    rdfs:comment "A disease the substance is classically indicated in. Cardinality: many. Extension-ready — no disease vocabulary loaded yet." .
+
+### --- Disease sub-tree ---------------------------------------------------
+
+cphr:hasNidana a owl:ObjectProperty ;
+    rdfs:domain cphr:Disease ;
+    rdfs:range cphr:Nidana ;
+    rdfs:label "has nidana" ;
+    rdfs:comment "A causative/aggravating factor of the disease. Cardinality: many. Stub." .
+
+cphr:involvesDosha a owl:ObjectProperty ;
+    rdfs:domain cphr:Disease ;
+    rdfs:range cphr:Dosha ;
+    rdfs:label "involves dosha" ;
+    rdfs:comment "The Dosha(s) vitiated in the disease. Cardinality: one or more. Stub." .
+
+#################################################################
+# DATATYPE PROPERTIES
+#################################################################
+
+### --- PlantSpecies : nomenclature + taxonomy literals --------------------
+
+cphr:scientificName a owl:DatatypeProperty ;
+    rdfs:domain cphr:PlantSpecies ;
+    rdfs:range xsd:string ;
+    rdfs:label "scientific name" ;
+    owl:equivalentProperty dwc:scientificName ;
+    rdfs:comment "Full scientific name with authorship, e.g. Terminalia chebula Retz. Cardinality: 1. Source: tradedmedicinalplants.org." .
+
+cphr:genus a owl:DatatypeProperty ;
+    rdfs:domain cphr:PlantSpecies ;
+    rdfs:range xsd:string ;
+    rdfs:label "genus" ;
+    owl:equivalentProperty dwc:genus ;
+    rdfs:comment "Genus name. Enables search by genus across species. Cardinality: 1." .
+
+cphr:specificEpithet a owl:DatatypeProperty ;
+    rdfs:domain cphr:PlantSpecies ;
+    rdfs:range xsd:string ;
+    rdfs:label "specific epithet" ;
+    owl:equivalentProperty dwc:specificEpithet ;
+    rdfs:comment "Species epithet (second part of the binomial). Cardinality: 1." .
+
+cphr:taxonClass a owl:DatatypeProperty ;
+    rdfs:domain cphr:PlantSpecies ;
+    rdfs:range xsd:string ;
+    rdfs:label "class" ;
+    owl:equivalentProperty dwc:class ;
+    rdfs:comment "Botanical class, e.g. Magnoliopsida. Cardinality: 1. (Named taxonClass to avoid the reserved word 'class'.) Source: hand-note 3 Taxon Concept." .
+
+cphr:family a owl:DatatypeProperty ;
+    rdfs:domain cphr:PlantSpecies ;
+    rdfs:range xsd:string ;
+    rdfs:label "family" ;
+    owl:equivalentProperty dwc:family ;
+    rdfs:comment "Botanical family, e.g. Combretaceae. Enables browsing by family. Cardinality: 1." .
+
+cphr:order a owl:DatatypeProperty ;
+    rdfs:domain cphr:PlantSpecies ;
+    rdfs:range xsd:string ;
+    rdfs:label "order" ;
+    owl:equivalentProperty dwc:order ;
+    rdfs:comment "Botanical order, e.g. Myrtales. Cardinality: 1." .
+
+cphr:kingdom a owl:DatatypeProperty ;
+    rdfs:domain cphr:PlantSpecies ;
+    rdfs:range xsd:string ;
+    rdfs:label "kingdom" ;
+    owl:equivalentProperty dwc:kingdom ;
+    rdfs:comment "Always \"Plantae\" for this dataset. Cardinality: 1." .
+
+cphr:vernacularName a owl:DatatypeProperty ;
+    rdfs:domain cphr:PlantSpecies ;
+    rdfs:range xsd:string ;
+    rdfs:label "vernacular name" ;
+    owl:equivalentProperty dwc:vernacularName ;
+    rdfs:comment "Common name in any regional language (Hindi, Tamil, Kannada...). Cardinality: many. Enables local-language search." .
+
+cphr:sanskritName a owl:DatatypeProperty ;
+    rdfs:domain cphr:PlantSpecies ;
+    rdfs:range xsd:string ;
+    rdfs:label "sanskrit name" ;
+    rdfs:comment "Name as it appears in classical Sanskrit texts. Cardinality: one or more (Sanskrit synonyms / Paryaya). Also used on cphr:Dravya." .
+
+cphr:hindiName a owl:DatatypeProperty ;
+    rdfs:domain cphr:PlantSpecies ;
+    rdfs:range xsd:string ;
+    rdfs:label "hindi name" ;
+    rdfs:comment "Common Hindi name(s). Cardinality: one or more. Source: AyurAhaar common-name field." .
+
+cphr:tradeName a owl:DatatypeProperty ;
+    rdfs:domain cphr:PlantSpecies ;
+    rdfs:range xsd:string ;
+    rdfs:label "trade name" ;
+    rdfs:comment "Market / commercial name in the Indian herbal trade. Cardinality: one or more. Source: tradedmedicinalplants.org." .
+
+cphr:color a owl:DatatypeProperty ;
+    rdfs:domain cphr:PlantSpecies ;
+    rdfs:range xsd:string ;
+    rdfs:label "color" ;
+    rdfs:comment "Visual colour of the ingredient, used for identification. Cardinality: one or more. Source: AyurAhaar Color filter. Also used on cphr:Dravya." .
+
+cphr:description a owl:DatatypeProperty ;
+    rdfs:domain cphr:PlantSpecies ;
+    rdfs:range xsd:string ;
+    rdfs:label "description" ;
+    owl:equivalentProperty dcterms:description ;
+    rdfs:comment "Free-text summary of the plant's Ayurvedic significance and primary uses. Cardinality: 1. Also used on cphr:Dravya." .
+
+cphr:isTradedInIndia a owl:DatatypeProperty ;
+    rdfs:domain cphr:PlantSpecies ;
+    rdfs:range xsd:boolean ;
+    rdfs:label "is traded in India" ;
+    rdfs:comment "Whether commercially traded in India per Goraya & Ved 2017. Cardinality: 1." .
+
+cphr:ipniId a owl:DatatypeProperty ;
+    rdfs:domain cphr:PlantSpecies ;
+    rdfs:range xsd:string ;
+    rdfs:label "IPNI ID" ;
+    rdfs:comment "International Plant Names Index identifier. Cardinality: 1." .
+
+cphr:wcvpId a owl:DatatypeProperty ;
+    rdfs:domain cphr:PlantSpecies ;
+    rdfs:range xsd:string ;
+    rdfs:label "WCVP ID" ;
+    rdfs:comment "World Checklist of Vascular Plants identifier. Cardinality: 1. Alignment: WCVP / Kew." .
+
+cphr:powoId a owl:DatatypeProperty ;
+    rdfs:domain cphr:PlantSpecies ;
+    rdfs:range xsd:string ;
+    rdfs:label "POWO ID" ;
+    rdfs:comment "Plants of the World Online (Kew) identifier / fqId. Cardinality: 1. New in v0.2." .
+
+cphr:gbifTaxonKey a owl:DatatypeProperty ;
+    rdfs:domain cphr:PlantSpecies ;
+    rdfs:range xsd:string ;
+    rdfs:label "GBIF taxon key" ;
+    rdfs:comment "GBIF backbone taxon key — join to occurrence data. Cardinality: 1. New in v0.2." .
+
+### --- TaxonConcept literals -------------------------------------------------
+
+cphr:taxonID a owl:DatatypeProperty ;
+    rdfs:domain cphr:TaxonConcept ;
+    rdfs:range xsd:string ;
+    rdfs:label "taxon ID" ;
+    owl:equivalentProperty dwc:taxonID ;
+    rdfs:comment "Identifier of the taxon concept in its source backbone. Cardinality: 1." .
+
+cphr:scientificNameAuthorship a owl:DatatypeProperty ;
+    rdfs:domain cphr:TaxonConcept ;
+    rdfs:range xsd:string ;
+    rdfs:label "scientific name authorship" ;
+    owl:equivalentProperty dwc:scientificNameAuthorship ;
+    rdfs:comment "Authorship string, e.g. \"Retz.\". Cardinality: 1." .
+
+cphr:acceptedNameUsage a owl:DatatypeProperty ;
+    rdfs:domain cphr:TaxonConcept ;
+    rdfs:range xsd:string ;
+    rdfs:label "accepted name usage" ;
+    owl:equivalentProperty dwc:acceptedNameUsage ;
+    rdfs:comment "The currently accepted name, when this concept is a synonym. Cardinality: 0..1." .
+
+cphr:nomenclaturalCode a owl:DatatypeProperty ;
+    rdfs:domain cphr:TaxonConcept ;
+    rdfs:range xsd:string ;
+    rdfs:label "nomenclatural code" ;
+    owl:equivalentProperty dwc:nomenclaturalCode ;
+    rdfs:comment "Governing code — \"ICN\" for plants. Cardinality: 1." .
+
+cphr:rankOrder a owl:DatatypeProperty ;
+    rdfs:domain cphr:TaxonRank ;
+    rdfs:range xsd:integer ;
+    rdfs:label "rank order" ;
+    rdfs:comment "Integer ordering of the rank (kingdom=10 ... species=70) for sorting. Cardinality: 1." .
+
+### --- Concept / Habitat / ObservationMethod literals ---------------------
+
+cphr:conceptTitle a owl:DatatypeProperty ;
+    rdfs:domain cphr:Concept ;
+    rdfs:range xsd:string ;
+    rdfs:label "concept title" ;
+    rdfs:comment "Short label for the concept node. Cardinality: 0..1." .
+
+cphr:conceptRemarks a owl:DatatypeProperty ;
+    rdfs:domain cphr:Concept ;
+    rdfs:range xsd:string ;
+    rdfs:label "concept remarks" ;
+    owl:equivalentProperty dwc:taxonRemarks ;
+    rdfs:comment "Free-text notes on the concept. Cardinality: 0..1." .
+
+cphr:habitatDescription a owl:DatatypeProperty ;
+    rdfs:domain cphr:Habitat ;
+    rdfs:range xsd:string ;
+    rdfs:label "habitat description" ;
+    owl:equivalentProperty dwc:habitat ;
+    rdfs:comment "Free-text description of the growing environment, e.g. \"deciduous forest up to 1500 m\". Cardinality: 0..1." .
+
+cphr:altitudeRange a owl:DatatypeProperty ;
+    rdfs:domain cphr:Habitat ;
+    rdfs:range xsd:string ;
+    rdfs:label "altitude range" ;
+    rdfs:comment "Altitude band in metres, e.g. \"200-1800\". Cardinality: 0..1. New in v0.2." .
+
+cphr:agroClimaticZone a owl:DatatypeProperty ;
+    rdfs:domain cphr:Habitat ;
+    rdfs:range xsd:string ;
+    rdfs:label "agro-climatic zone" ;
+    rdfs:comment "Named agro-climatic / phytogeographic zone. Cardinality: many. New in v0.2." .
+
+cphr:methodName a owl:DatatypeProperty ;
+    rdfs:domain cphr:ObservationMethod ;
+    rdfs:range xsd:string ;
+    rdfs:label "method name" ;
+    rdfs:comment "Short name of the observation method. Cardinality: 1." .
+
+cphr:methodDescription a owl:DatatypeProperty ;
+    rdfs:domain cphr:ObservationMethod ;
+    rdfs:range xsd:string ;
+    rdfs:label "method description" ;
+    owl:equivalentProperty dwc:samplingProtocol ;
+    rdfs:comment "How the record was made. Cardinality: 0..1." .
+
+cphr:basisOfRecord a owl:DatatypeProperty ;
+    rdfs:domain cphr:ObservationMethod ;
+    rdfs:range xsd:string ;
+    rdfs:label "basis of record" ;
+    owl:equivalentProperty dwc:basisOfRecord ;
+    rdfs:comment "Nature of the record: HumanObservation / PreservedSpecimen / MaterialCitation / MachineObservation. Cardinality: 1." .
+
+### --- Location literals ---------------------------------------------------
+
+cphr:locality a owl:DatatypeProperty ;
+    rdfs:domain cphr:Location ;
+    rdfs:range xsd:string ;
+    rdfs:label "locality" ;
+    owl:equivalentProperty dwc:locality ;
+    rdfs:comment "Specific place name. Cardinality: 1." .
+
+cphr:stateProvince a owl:DatatypeProperty ;
+    rdfs:domain cphr:Location ;
+    rdfs:range xsd:string ;
+    rdfs:label "state / province" ;
+    owl:equivalentProperty dwc:stateProvince ;
+    rdfs:comment "First-level administrative division. Cardinality: 1." .
+
+cphr:country a owl:DatatypeProperty ;
+    rdfs:domain cphr:Location ;
+    rdfs:range xsd:string ;
+    rdfs:label "country" ;
+    owl:equivalentProperty dwc:country ;
+    rdfs:comment "Country name. Cardinality: 1." .
+
+cphr:decimalLatitude a owl:DatatypeProperty ;
+    rdfs:domain cphr:Location ;
+    rdfs:range xsd:double ;
+    rdfs:label "decimal latitude" ;
+    owl:equivalentProperty dwc:decimalLatitude ;
+    rdfs:comment "Latitude in decimal degrees (WGS84). Cardinality: 1." .
+
+cphr:decimalLongitude a owl:DatatypeProperty ;
+    rdfs:domain cphr:Location ;
+    rdfs:range xsd:double ;
+    rdfs:label "decimal longitude" ;
+    owl:equivalentProperty dwc:decimalLongitude ;
+    rdfs:comment "Longitude in decimal degrees (WGS84). Cardinality: 1." .
+
+### --- Document / WebPage literals ---------------------------------------
+
+cphr:documentTitle a owl:DatatypeProperty ;
+    rdfs:domain cphr:Document ;
+    rdfs:range xsd:string ;
+    rdfs:label "document title" ;
+    owl:equivalentProperty dcterms:title ;
+    rdfs:comment "Title of the source document. Cardinality: 1." .
+
+cphr:documentType a owl:DatatypeProperty ;
+    rdfs:domain cphr:Document ;
+    rdfs:range xsd:string ;
+    rdfs:label "document type" ;
+    owl:equivalentProperty dcterms:type ;
+    rdfs:comment "Kind of document: Nighantu / Samhita / Monograph / Dataset / WebResource. Cardinality: 1." .
+
+cphr:bibliographicCitation a owl:DatatypeProperty ;
+    rdfs:domain cphr:Document ;
+    rdfs:range xsd:string ;
+    rdfs:label "bibliographic citation" ;
+    owl:equivalentProperty dcterms:bibliographicCitation ;
+    rdfs:comment "Full citation string. Cardinality: 1." .
+
+cphr:documentDate a owl:DatatypeProperty ;
+    rdfs:domain cphr:Document ;
+    rdfs:range xsd:string ;
+    rdfs:label "document date" ;
+    owl:equivalentProperty dcterms:date ;
+    rdfs:comment "Publication / compilation date (year or ISO date). Cardinality: 0..1." .
+
+cphr:url a owl:DatatypeProperty ;
+    rdfs:domain cphr:WebPage ;
+    rdfs:range xsd:anyURI ;
+    rdfs:label "URL" ;
+    rdfs:comment "Address of the online resource. Cardinality: 1. Source: hand-note 3 (Document -> web page)." .
+
+cphr:accessDate a owl:DatatypeProperty ;
+    rdfs:domain cphr:WebPage ;
+    rdfs:range xsd:date ;
+    rdfs:label "access date" ;
+    rdfs:comment "Date the URL was last retrieved. Cardinality: 0..1." .
+
+### --- Dravya literals ---------------------------------------------------
+
+cphr:dravyaName a owl:DatatypeProperty ;
+    rdfs:domain cphr:Dravya ;
+    rdfs:range xsd:string ;
+    rdfs:label "dravya name" ;
+    rdfs:comment "Primary name of the substance (usually the classical Sanskrit name). Cardinality: 1." .
+
+cphr:officialStatus a owl:DatatypeProperty ;
+    rdfs:domain cphr:Dravya ;
+    rdfs:range xsd:string ;
+    rdfs:label "official status" ;
+    rdfs:comment "Regulatory listing, e.g. \"API Part I\", \"Not pharmacopoeial\". Cardinality: 0..1. New in v0.2." .
+
+cphr:apiMonographRef a owl:DatatypeProperty ;
+    rdfs:domain cphr:Dravya ;
+    rdfs:range xsd:string ;
+    rdfs:label "API monograph reference" ;
+    rdfs:comment "Ayurvedic Pharmacopoeia of India monograph number. Cardinality: 0..1. New in v0.2." .
+
+### --- Dravyaguna / Karma / Prabhava / DoshaAction literals -------------
+
+cphr:dravyagunaSummary a owl:DatatypeProperty ;
+    rdfs:domain cphr:Dravyaguna ;
+    rdfs:range xsd:string ;
+    rdfs:label "dravyaguna summary" ;
+    rdfs:comment "One-line prose summary of the property set. Cardinality: 0..1." .
+
+cphr:textualReference a owl:DatatypeProperty ;
+    rdfs:domain cphr:Dravyaguna ;
+    rdfs:range xsd:string ;
+    rdfs:label "textual reference" ;
+    rdfs:comment "Which Nighantu / Samhita verse the property set is quoted from. Cardinality: 0..many." .
+
+cphr:karmaCategory a owl:DatatypeProperty ;
+    rdfs:domain cphr:Karma ;
+    rdfs:range xsd:string ;
+    rdfs:label "karma category" ;
+    rdfs:comment "Broad therapeutic grouping. Cardinality: 1. Values: Digestive / Rejuvenative / Neurological / Anti-inflammatory / Respiratory / Cardiovascular / Detoxification / Anti-infective / Urinary." .
+
+cphr:prabhavaDescription a owl:DatatypeProperty ;
+    rdfs:domain cphr:Prabhava ;
+    rdfs:range xsd:string ;
+    rdfs:label "prabhava description" ;
+    rdfs:comment "Free-text statement of the specific effect and, where known, the classical source. Cardinality: 1. New in v0.2." .
+
+cphr:actionType a owl:DatatypeProperty ;
+    rdfs:domain cphr:DoshaAction ;
+    rdfs:range xsd:string ;
+    rdfs:label "action type" ;
+    rdfs:comment "Direction of effect on the Dosha. Cardinality: exactly 1. Values: \"Shamaka\" (reduces) or \"Vardhaka\" (increases)." .
+
+cphr:doshaActionNote a owl:DatatypeProperty ;
+    rdfs:domain cphr:DoshaAction ;
+    rdfs:range xsd:string ;
+    rdfs:label "dosha action note" ;
+    rdfs:comment "Qualifier, e.g. \"only in excess\", \"with anupana\". Cardinality: 0..1." .
+
+### --- SourceType / PlantPart / Varga literals -------------------------
+
+cphr:sourceTypeCode a owl:DatatypeProperty ;
+    rdfs:domain cphr:SourceType ;
+    rdfs:range xsd:integer ;
+    rdfs:label "source type code" ;
+    rdfs:comment "Numeric code from hand-note 2: 1 = plant, 2 = metal & mineral, 3 = animal. Cardinality: 1." .
+
+cphr:shodhanaRequired a owl:DatatypeProperty ;
+    rdfs:domain cphr:SourceType ;
+    rdfs:range xsd:boolean ;
+    rdfs:label "shodhana required" ;
+    rdfs:comment "Whether substances of this source type require Shodhana (purification) before use — true for metal/mineral and most animal sources. Cardinality: 0..1. New in v0.2." .
+
+cphr:partNote a owl:DatatypeProperty ;
+    rdfs:domain cphr:PlantPart ;
+    rdfs:range xsd:string ;
+    rdfs:label "part note" ;
+    rdfs:comment "Preparation qualifier for the part, e.g. \"dried\", \"unripe fruit\". Cardinality: 0..1." .
+
+cphr:nighantuSource a owl:DatatypeProperty ;
+    rdfs:domain cphr:Varga ;
+    rdfs:range xsd:string ;
+    rdfs:label "nighantu source" ;
+    rdfs:comment "Which Nighantu / Samhita defines this Varga, e.g. \"Bhavaprakasha Nighantu\". Cardinality: one or more. New in v0.2." .
+
+cphr:vargaNote a owl:DatatypeProperty ;
+    rdfs:domain cphr:Varga ;
+    rdfs:range xsd:string ;
+    rdfs:label "varga note" ;
+    rdfs:comment "Free-text note on the group's defining theme. Cardinality: 0..1." .
+
+### --- Disease / Nidana literals --------------------------------------
+
+cphr:diseaseName a owl:DatatypeProperty ;
+    rdfs:domain cphr:Disease ;
+    rdfs:range xsd:string ;
+    rdfs:label "disease name" ;
+    rdfs:comment "Name of the disease (Sanskrit and/or English). Cardinality: one or more. Stub." .
+
+cphr:icdCode a owl:DatatypeProperty ;
+    rdfs:domain cphr:Disease ;
+    rdfs:range xsd:string ;
+    rdfs:label "ICD code" ;
+    rdfs:comment "WHO ICD-11 code, incl. the Traditional Medicine (TM2) chapter where applicable. Cardinality: 0..many. Stub." .
+
+cphr:namasteCode a owl:DatatypeProperty ;
+    rdfs:domain cphr:Disease ;
+    rdfs:range xsd:string ;
+    rdfs:label "NAMASTE code" ;
+    rdfs:comment "National AYUSH Morbidity & Standardized Terminologies (NAMASTE / NAMC) Ayurveda code. Cardinality: 0..1. Stub." .
+
+cphr:nidanaDescription a owl:DatatypeProperty ;
+    rdfs:domain cphr:Nidana ;
+    rdfs:range xsd:string ;
+    rdfs:label "nidana description" ;
+    rdfs:comment "Free-text causative / aggravating factor. Cardinality: 1. Stub." .
+
+#################################################################
+# CONTROLLED VOCABULARY  (individuals as SKOS concepts — same pattern
+# as v0.1; `a skos:Concept, cphr:X` blocks are not parsed as owl
+# entities by the read API, so @en/@sa language tags are safe here)
+#################################################################
+
+### Rasa (taste)
+
+cphr:Rasa_Madhura a skos:Concept, cphr:Rasa ; skos:prefLabel "Sweet"@en ; skos:altLabel "Madhura"@sa .
+cphr:Rasa_Amla    a skos:Concept, cphr:Rasa ; skos:prefLabel "Sour"@en ; skos:altLabel "Amla"@sa .
+cphr:Rasa_Lavana  a skos:Concept, cphr:Rasa ; skos:prefLabel "Salty"@en ; skos:altLabel "Lavana"@sa .
+cphr:Rasa_Katu    a skos:Concept, cphr:Rasa ; skos:prefLabel "Pungent"@en ; skos:altLabel "Katu"@sa .
+cphr:Rasa_Tikta   a skos:Concept, cphr:Rasa ; skos:prefLabel "Bitter"@en ; skos:altLabel "Tikta"@sa .
+cphr:Rasa_Kashaya a skos:Concept, cphr:Rasa ; skos:prefLabel "Astringent"@en ; skos:altLabel "Kashaya"@sa .
+
+### Guna (quality) — twenty Gurvadi gunas (ten pairs)
+
+cphr:Guna_Laghu    a skos:Concept, cphr:Guna ; skos:prefLabel "Light"@en ; skos:altLabel "Laghu"@sa .
+cphr:Guna_Guru     a skos:Concept, cphr:Guna ; skos:prefLabel "Heavy"@en ; skos:altLabel "Guru"@sa .
+cphr:Guna_Ruksha   a skos:Concept, cphr:Guna ; skos:prefLabel "Dry"@en ; skos:altLabel "Ruksha"@sa .
+cphr:Guna_Snigdha  a skos:Concept, cphr:Guna ; skos:prefLabel "Unctuous / Oily"@en ; skos:altLabel "Snigdha"@sa .
+cphr:Guna_Ushna    a skos:Concept, cphr:Guna ; skos:prefLabel "Hot"@en ; skos:altLabel "Ushna"@sa .
+cphr:Guna_Sheeta   a skos:Concept, cphr:Guna ; skos:prefLabel "Cold"@en ; skos:altLabel "Sheeta"@sa .
+cphr:Guna_Tikshna  a skos:Concept, cphr:Guna ; skos:prefLabel "Sharp / Penetrating"@en ; skos:altLabel "Tikshna"@sa .
+cphr:Guna_Manda    a skos:Concept, cphr:Guna ; skos:prefLabel "Dull / Slow"@en ; skos:altLabel "Manda"@sa .
+cphr:Guna_Sara     a skos:Concept, cphr:Guna ; skos:prefLabel "Mobile / Flowing"@en ; skos:altLabel "Sara"@sa .
+cphr:Guna_Sthira   a skos:Concept, cphr:Guna ; skos:prefLabel "Stable / Static"@en ; skos:altLabel "Sthira"@sa .
+cphr:Guna_Mridu    a skos:Concept, cphr:Guna ; skos:prefLabel "Soft"@en ; skos:altLabel "Mridu"@sa .
+cphr:Guna_Kathina  a skos:Concept, cphr:Guna ; skos:prefLabel "Hard"@en ; skos:altLabel "Kathina"@sa .
+cphr:Guna_Vishada  a skos:Concept, cphr:Guna ; skos:prefLabel "Clear / Non-slimy"@en ; skos:altLabel "Vishada"@sa .
+cphr:Guna_Picchila a skos:Concept, cphr:Guna ; skos:prefLabel "Slimy / Sticky"@en ; skos:altLabel "Picchila"@sa .
+cphr:Guna_Sthula   a skos:Concept, cphr:Guna ; skos:prefLabel "Gross / Bulky"@en ; skos:altLabel "Sthula"@sa .
+cphr:Guna_Sukshma  a skos:Concept, cphr:Guna ; skos:prefLabel "Subtle / Minute"@en ; skos:altLabel "Sukshma"@sa .
+cphr:Guna_Drava    a skos:Concept, cphr:Guna ; skos:prefLabel "Liquid"@en ; skos:altLabel "Drava"@sa .
+cphr:Guna_Sandra   a skos:Concept, cphr:Guna ; skos:prefLabel "Dense / Solid"@en ; skos:altLabel "Sandra"@sa .
+
+### Veerya (potency)
+
+cphr:Veerya_Ushna  a skos:Concept, cphr:Veerya ; skos:prefLabel "Hot Potency"@en ; skos:altLabel "Ushna Veerya"@sa .
+cphr:Veerya_Sheeta a skos:Concept, cphr:Veerya ; skos:prefLabel "Cold Potency"@en ; skos:altLabel "Sheeta Veerya"@sa .
+
+### Vipaka (post-digestive effect)
+
+cphr:Vipaka_Madhura a skos:Concept, cphr:Vipaka ; skos:prefLabel "Sweet post-digestive"@en ; skos:altLabel "Madhura Vipaka"@sa .
+cphr:Vipaka_Amla    a skos:Concept, cphr:Vipaka ; skos:prefLabel "Sour post-digestive"@en ; skos:altLabel "Amla Vipaka"@sa .
+cphr:Vipaka_Katu    a skos:Concept, cphr:Vipaka ; skos:prefLabel "Pungent post-digestive"@en ; skos:altLabel "Katu Vipaka"@sa .
+
+### Dosha
+
+cphr:Dosha_Vata  a skos:Concept, cphr:Dosha ; skos:prefLabel "Air / Ether energy"@en ; skos:altLabel "Vata"@sa .
+cphr:Dosha_Pitta a skos:Concept, cphr:Dosha ; skos:prefLabel "Fire / Water energy"@en ; skos:altLabel "Pitta"@sa .
+cphr:Dosha_Kapha a skos:Concept, cphr:Dosha ; skos:prefLabel "Earth / Water energy"@en ; skos:altLabel "Kapha"@sa .
+
+### Karma (therapeutic action)
+
+cphr:Karma_Deepana            a skos:Concept, cphr:Karma ; skos:prefLabel "Digestive stimulant"@en ; skos:altLabel "Deepana"@sa .
+cphr:Karma_Pachana            a skos:Concept, cphr:Karma ; skos:prefLabel "Digestant / Carminative"@en ; skos:altLabel "Pachana"@sa .
+cphr:Karma_Anulomana          a skos:Concept, cphr:Karma ; skos:prefLabel "Mild laxative"@en ; skos:altLabel "Anulomana"@sa .
+cphr:Karma_Rasayana           a skos:Concept, cphr:Karma ; skos:prefLabel "Rejuvenative / Adaptogen"@en ; skos:altLabel "Rasayana"@sa .
+cphr:Karma_Balya              a skos:Concept, cphr:Karma ; skos:prefLabel "Tonic / Strength-promoting"@en ; skos:altLabel "Balya"@sa .
+cphr:Karma_Medhya             a skos:Concept, cphr:Karma ; skos:prefLabel "Cognitive enhancer"@en ; skos:altLabel "Medhya"@sa .
+cphr:Karma_Jwaraghna          a skos:Concept, cphr:Karma ; skos:prefLabel "Antipyretic"@en ; skos:altLabel "Jwaraghna"@sa .
+cphr:Karma_Kasahara           a skos:Concept, cphr:Karma ; skos:prefLabel "Anti-tussive"@en ; skos:altLabel "Kasahara"@sa .
+cphr:Karma_Shothahara         a skos:Concept, cphr:Karma ; skos:prefLabel "Anti-inflammatory"@en ; skos:altLabel "Shothahara"@sa .
+cphr:Karma_Vedanasthapana     a skos:Concept, cphr:Karma ; skos:prefLabel "Analgesic"@en ; skos:altLabel "Vedanasthapana"@sa .
+cphr:Karma_Vishahara          a skos:Concept, cphr:Karma ; skos:prefLabel "Anti-toxic / Detoxifier"@en ; skos:altLabel "Vishahara"@sa .
+cphr:Karma_Krimighna          a skos:Concept, cphr:Karma ; skos:prefLabel "Antimicrobial / Anti-parasitic"@en ; skos:altLabel "Krimighna"@sa .
+cphr:Karma_Hridya             a skos:Concept, cphr:Karma ; skos:prefLabel "Cardiotonic"@en ; skos:altLabel "Hridya"@sa .
+cphr:Karma_Mutrakricchrahara  a skos:Concept, cphr:Karma ; skos:prefLabel "Urinary demulcent"@en ; skos:altLabel "Mutrakricchrahara"@sa .
+
+### Varga (classification group)
+
+cphr:Varga_Haritaki      a skos:Concept, cphr:Varga ; skos:prefLabel "Haritaki Group"@en ; skos:altLabel "Haritakyadi Varga"@sa .
+cphr:Varga_Pippalyadi    a skos:Concept, cphr:Varga ; skos:prefLabel "Pippali Group"@en ; skos:altLabel "Pippalyadi Varga"@sa .
+cphr:Varga_Guduchyadi    a skos:Concept, cphr:Varga ; skos:prefLabel "Guduchi Group"@en ; skos:altLabel "Guduchyadi Varga"@sa .
+cphr:Varga_Shatavaryadi  a skos:Concept, cphr:Varga ; skos:prefLabel "Shatavari Group"@en ; skos:altLabel "Shatavaryadi Varga"@sa .
+cphr:Varga_Musthadi      a skos:Concept, cphr:Varga ; skos:prefLabel "Mustha Group"@en ; skos:altLabel "Musthadi Varga"@sa .
+cphr:Varga_Karpuradi     a skos:Concept, cphr:Varga ; skos:prefLabel "Karpura Group"@en ; skos:altLabel "Karpuradi Varga"@sa .
+cphr:Varga_ShakaVarga    a skos:Concept, cphr:Varga ; skos:prefLabel "Leafy Greens Group"@en ; skos:altLabel "Shaka Varga"@sa .
+
+### PlantPart
+
+cphr:Part_Root       a skos:Concept, cphr:PlantPart ; skos:prefLabel "Root"@en ; skos:altLabel "Mula"@sa .
+cphr:Part_Leaf       a skos:Concept, cphr:PlantPart ; skos:prefLabel "Leaf"@en ; skos:altLabel "Patra"@sa .
+cphr:Part_Fruit      a skos:Concept, cphr:PlantPart ; skos:prefLabel "Fruit"@en ; skos:altLabel "Phala"@sa .
+cphr:Part_Seed       a skos:Concept, cphr:PlantPart ; skos:prefLabel "Seed"@en ; skos:altLabel "Bija"@sa .
+cphr:Part_Bark       a skos:Concept, cphr:PlantPart ; skos:prefLabel "Bark"@en ; skos:altLabel "Tvak"@sa .
+cphr:Part_Flower     a skos:Concept, cphr:PlantPart ; skos:prefLabel "Flower"@en ; skos:altLabel "Pushpa"@sa .
+cphr:Part_Rhizome    a skos:Concept, cphr:PlantPart ; skos:prefLabel "Rhizome"@en ; skos:altLabel "Kanda"@sa .
+cphr:Part_Stem       a skos:Concept, cphr:PlantPart ; skos:prefLabel "Stem"@en ; skos:altLabel "Kashtha"@sa .
+cphr:Part_Latex      a skos:Concept, cphr:PlantPart ; skos:prefLabel "Latex / Resin"@en ; skos:altLabel "Ksheera / Niryasa"@sa .
+cphr:Part_WholePlant a skos:Concept, cphr:PlantPart ; skos:prefLabel "Whole Plant"@en ; skos:altLabel "Sarva Anga / Panchanga"@sa .
+
+### SourceType (Dravya Yoni) — hand-note 2
+
+cphr:Source_Plant        a skos:Concept, cphr:SourceType ; skos:prefLabel "Plant"@en ; skos:altLabel "Audbhida"@sa .
+cphr:Source_MineralMetal a skos:Concept, cphr:SourceType ; skos:prefLabel "Metal & Mineral"@en ; skos:altLabel "Parthiva / Dhatu-Rasa"@sa .
+cphr:Source_Animal       a skos:Concept, cphr:SourceType ; skos:prefLabel "Animal"@en ; skos:altLabel "Jangama"@sa .
+
+### TaxonRank — hand-note 3 (Class / Family / Genus / Species) + backbone ranks
+
+cphr:Rank_Kingdom a skos:Concept, cphr:TaxonRank ; skos:prefLabel "Kingdom"@en .
+cphr:Rank_Order   a skos:Concept, cphr:TaxonRank ; skos:prefLabel "Order"@en .
+cphr:Rank_Class   a skos:Concept, cphr:TaxonRank ; skos:prefLabel "Class"@en .
+cphr:Rank_Family  a skos:Concept, cphr:TaxonRank ; skos:prefLabel "Family"@en .
+cphr:Rank_Genus   a skos:Concept, cphr:TaxonRank ; skos:prefLabel "Genus"@en .
+cphr:Rank_Species a skos:Concept, cphr:TaxonRank ; skos:prefLabel "Species"@en .
+cphr:Rank_Variety a skos:Concept, cphr:TaxonRank ; skos:prefLabel "Variety"@en .
+
+### TaxonomicStatus
+
+cphr:Status_Accepted   a skos:Concept, cphr:TaxonomicStatus ; skos:prefLabel "Accepted"@en .
+cphr:Status_Synonym    a skos:Concept, cphr:TaxonomicStatus ; skos:prefLabel "Synonym"@en .
+cphr:Status_Unresolved a skos:Concept, cphr:TaxonomicStatus ; skos:prefLabel "Unresolved"@en .
+cphr:Status_Misapplied a skos:Concept, cphr:TaxonomicStatus ; skos:prefLabel "Misapplied"@en .
+
+### ObservationMethod
+
+cphr:Method_FieldObservation a skos:Concept, cphr:ObservationMethod ; skos:prefLabel "Field observation"@en .
+cphr:Method_Herbarium        a skos:Concept, cphr:ObservationMethod ; skos:prefLabel "Herbarium specimen"@en .
+cphr:Method_Literature        a skos:Concept, cphr:ObservationMethod ; skos:prefLabel "Classical text / literature"@en .
+cphr:Method_Database          a skos:Concept, cphr:ObservationMethod ; skos:prefLabel "Database record"@en .

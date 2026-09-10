@@ -1,3 +1,4 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
 fastapi
 uvicorn
 psycopg2
@@ -5,3 +6,9 @@ httpx==0.28.1
 python-dotenv
 python-multipart
 openpyxl
+rdflib
+faiss-cpu
+sentence-transformers
+langchain
+langchain-ollama
+langgraph

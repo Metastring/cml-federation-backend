@@ -6,8 +6,10 @@ import os
 import re
 
 
-_DEFAULT_TTL_PATH = Path("/home/metastring/src/CPHR-Backend/ontology/cphr-ontology.ttl")
-_DEFAULT_FIELD_MAP_PATH = Path("/home/metastring/src/CPHR-Backend/ontology/cphr-ontology-field-map.md")
+# Repo-relative, not machine-specific: app/cphr_ontology_service.py -> app/.. -> ontology-ttl-files/
+_ONTOLOGY_DIR = Path(__file__).resolve().parent.parent / "ontology-ttl-files"
+_DEFAULT_TTL_PATH = _ONTOLOGY_DIR / "cphr-ayurveda-ontology.ttl"
+_DEFAULT_FIELD_MAP_PATH = _ONTOLOGY_DIR / "cphr-ayurveda-field-map.md"
 
 ONTOLOGY_TTL_PATH = Path(os.getenv("CPHR_ONTOLOGY_TTL_PATH", str(_DEFAULT_TTL_PATH)))
 ONTOLOGY_FIELD_MAP_PATH = Path(os.getenv("CPHR_ONTOLOGY_FIELD_MAP_PATH", str(_DEFAULT_FIELD_MAP_PATH)))
@@ -316,6 +318,83 @@ def get_class_detail(class_name: str) -> dict[str, object] | None:
         "datatype_properties": sorted(datatype_properties, key=lambda item: item["name"]),
         "outgoing_object_properties": sorted(outgoing_object_properties, key=lambda item: item["name"]),
         "incoming_object_properties": sorted(incoming_object_properties, key=lambda item: item["name"]),
+    }
+
+
+# Organisational root of the class tree (see cphr-ayurveda-ontology.ttl). A
+# no-parent query returns *its* children (PlantSpecies/Dravya/Disease/Dosha),
+# not the root itself — the root has no properties of its own, it only exists
+# so the tree renders under one node. Falls back to true parentless classes if
+# a future ontology doesn't declare this root.
+_V3_ROOT_CLASS_NAME = "AyurvedaEntity"
+
+
+def _class_v3_view(class_info: dict, snapshot: dict[str, object]) -> dict[str, object]:
+    """One class, its own datatype + object properties (domain match, same
+    rule as get_class_detail), and its direct children — everything the v3
+    class-tree API needs to render one node without a follow-up call."""
+    name = class_info["name"]
+
+    datatype_properties = []
+    seen_datatype_properties = set()
+    for property_name in class_info["covered_fields"]:
+        property_info = snapshot["property_by_name"].get(property_name)
+        if property_info and property_info["property_type"] == "datatype":
+            datatype_properties.append(property_info)
+            seen_datatype_properties.add(property_name)
+
+    for property_info in snapshot["datatype_properties"]:
+        if name in property_info["domains"] and property_info["name"] not in seen_datatype_properties:
+            datatype_properties.append(property_info)
+            seen_datatype_properties.add(property_info["name"])
+
+    object_properties = [
+        property_info
+        for property_info in snapshot["object_properties"]
+        if name in property_info["domains"]
+    ]
+
+    children = snapshot["children_by_parent"].get(name, [])
+
+    return {
+        "name": name,
+        "label": class_info["label"],
+        "comment": class_info["comment"],
+        "group": class_info["group"],
+        "parents": class_info["parents"],
+        "children": children,
+        "has_children": bool(children),
+        "datatype_properties": sorted(datatype_properties, key=lambda item: item["name"]),
+        "object_properties": sorted(object_properties, key=lambda item: item["name"]),
+    }
+
+
+def list_ontology_classes_v3(parent: str | None) -> dict[str, object] | None:
+    """Children of `parent` (each with its own properties), or the top-level
+    classes when `parent` is omitted/blank. Returns None if a non-blank
+    `parent` doesn't name a known class, so the caller can 404."""
+    snapshot = load_ontology_snapshot()
+    parent_name: str | None = None
+
+    if parent and parent.strip():
+        parent_name = _normalize_term_name(parent.strip())
+        if parent_name not in snapshot["class_by_name"]:
+            return None
+        child_names = snapshot["children_by_parent"].get(parent_name, [])
+    elif _V3_ROOT_CLASS_NAME in snapshot["class_by_name"]:
+        child_names = snapshot["children_by_parent"].get(_V3_ROOT_CLASS_NAME, [])
+    else:
+        child_names = [item["name"] for item in snapshot["classes"] if not item["parents"]]
+
+    items = [
+        _class_v3_view(snapshot["class_by_name"][name], snapshot)
+        for name in sorted(child_names)
+    ]
+
+    return {
+        "parent": parent_name,
+        "count": len(items),
+        "items": items,
     }
 
 

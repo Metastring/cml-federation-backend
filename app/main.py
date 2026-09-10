@@ -19,6 +19,10 @@ from app.endpoints import dataset_master
 from app.endpoints import dataset_details
 from app.endpoints import ontology
 from app.endpoints import cphr_ontology
+from app.endpoints import cphr_ontology_v3
+from app.endpoints import cphr_ontology_builder
+from app.endpoints import dataset_ontology_mapping
+from app.endpoints import ontology_publish
 from app.endpoints import cphr_search
 from app.endpoints import federated_sources
 from psycopg2.extras import RealDictCursor
@@ -46,9 +50,11 @@ app.include_router(metadata.router)
 app.include_router(categories_router)
 app.include_router(dataset_master.router)
 app.include_router(dataset_details.router)
-app.include_router(ontology.router)
-app.include_router(ontology.biodiversity_router)
 app.include_router(cphr_ontology.router)
+app.include_router(cphr_ontology_v3.router)
+app.include_router(cphr_ontology_builder.router)
+app.include_router(dataset_ontology_mapping.router)
+app.include_router(ontology_publish.router)
 app.include_router(cphr_search.router)
 app.include_router(federated_sources.router)
 
@@ -59,7 +65,6 @@ CPMP_BOTANICAL_SEARCH_URL = "https://cpmp.tdu.edu.in/api/species/search/v2"
 CPMP_BOTANICAL_FEDERATED_FIELD = "Search Results"
 
 PARTICIPANTS = {
-    "Kew Plant Database": "http://134.209.145.106:8000/search",
     "CPMP Botanical Source": CPMP_BOTANICAL_SEARCH_URL,
     "CPMP Drug Source": "http://139.59.84.243:9087/search/search/drugname",
     "Traded Medicinal Plants of India (TMPI)": "https://tradedmedicinalplants.org/kew/webapi/advance/search",
@@ -1646,7 +1651,9 @@ def ping():
 
 # ── federated-search-with-ontology ──────────────────────────────────────────
 
-FUSEKI_SPARQL_ENDPOINT = "http://139.59.23.148:3030/myds/sparql"
+# Canonical Fuseki endpoint — single source of truth defined in
+# app/endpoints/ontology.py; import it rather than redefining it here.
+FUSEKI_SPARQL_ENDPOINT = ontology.FUSEKI_SPARQL_ENDPOINT
 # Named graphs loaded in Fuseki
 _CML_GRAPH_PREFIX = "http://cml.org/ontology"
 

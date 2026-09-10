@@ -1,0 +1,7 @@
+{
+  "ayurveda": {
+    "file_path": "cphr-ayurveda-ontology.ttl",
+    "fuseki_graph": "http://cml.org/ontology/ayurveda",
+    "label": "CPHR Ayurveda / Dravyaguna Ontology"
+  }
+}

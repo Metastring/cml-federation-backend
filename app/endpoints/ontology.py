@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, HTTPException
 import httpx
 from app.db import get_connection
@@ -8,7 +10,12 @@ router = APIRouter(prefix="/ontology", tags=["Ontology"])
 # Separate router for biodiversity ontology mappings
 biodiversity_router = APIRouter(prefix="/biodiversity/ontology", tags=["Biodiversity Ontology"])
 
-FUSEKI_SPARQL_ENDPOINT = "http://139.59.84.243:3030/cml-ontology/query"
+# Canonical Fuseki endpoint — verified to hold the loaded CML ontology graphs
+# (biodiversity/metadata/economic). Do not point this at the other historical
+# Fuseki instance (139.59.23.148/myds) — that one holds unrelated test data.
+FUSEKI_SPARQL_ENDPOINT = os.getenv(
+    "FUSEKI_SPARQL_ENDPOINT", "http://139.59.84.243:3030/cml-ontology/query"
+)
 
 
 def _local_name(uri_or_literal: str) -> str:

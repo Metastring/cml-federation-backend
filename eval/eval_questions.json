@@ -1,0 +1,247 @@
+{
+  "_notes": "CPHR-106 (Build eval question set, under Epic CPHR-92 Agent MVP - Phase 2). Spans vocabulary / spatial / cross_partner / out_of_scope per the ticket and the Phase-2 line item in nl-agentic-search-architecture.md §6 (\"Evaluate on a hand-written question set spanning: pure vocabulary questions, single-dataset spatial questions, cross-partner federated questions, and out-of-scope questions\"). Supersedes/extends the 22-question ad-hoc set from CPHR-89 (retrieval-only, no category tagging). grading.mode == 'retrieval' is checkable today against retrieval-index/ via run_retrieval_eval.py; grading.mode == 'agent' needs the ReAct agent + tool router (rest of Epic CPHR-92) and is included now so the set doesn't need rebuilding once that lands.",
+  "no_match_threshold": 0.3,
+  "registered_datasets_confirmed": [
+    "Traded Medicinal Plants of India (TMPI)",
+    "Rasashastra: A Database of Metals and Minerals used in Ayurveda",
+    "Ayurahaar – The Ahara & Nutrition Portal",
+    "CPMP Botanical Source",
+    "CPMP Drug Source"
+  ],
+  "questions": [
+    {
+      "id": "vocab-01",
+      "category": "vocabulary",
+      "question": "what taste does this plant have",
+      "grading": {"mode": "retrieval", "expected_kind": "class", "expected_text_contains": "Rasa"}
+    },
+    {
+      "id": "vocab-02",
+      "category": "vocabulary",
+      "question": "what therapeutic action does this plant have",
+      "grading": {"mode": "retrieval", "expected_kind": "class", "expected_text_contains": "Karma"},
+      "note": "Regression probe for the CPHR-89 karma-ranking miss (was beaten by 'Plant Part' at 0.62 vs 0.51-0.59; fixed by enriching the Karma class/hasKarma comments in cphr-ayurveda-ontology.ttl to mirror the question's own phrasing)."
+    },
+    {
+      "id": "vocab-03",
+      "category": "vocabulary",
+      "question": "which dosha does this herb affect",
+      "grading": {"mode": "retrieval", "expected_kind": "class", "expected_text_contains": "Dosha Action"}
+    },
+    {
+      "id": "vocab-04",
+      "category": "vocabulary",
+      "question": "what classification group or varga does this plant belong to",
+      "grading": {"mode": "retrieval", "expected_kind": "object_property", "expected_text_contains": "belongs to varga"}
+    },
+    {
+      "id": "vocab-05",
+      "category": "vocabulary",
+      "question": "what is the scientific name of this plant",
+      "grading": {"mode": "retrieval", "expected_kind": "datatype_property", "expected_text_contains": "scientific name"}
+    },
+    {
+      "id": "vocab-06",
+      "category": "vocabulary",
+      "question": "what is the Sanskrit name of this plant",
+      "grading": {"mode": "retrieval", "expected_kind": "datatype_property", "expected_text_contains": "sanskrit name"}
+    },
+    {
+      "id": "vocab-07",
+      "category": "vocabulary",
+      "question": "does a Shamaka dosha action mean the dosha is increased or reduced",
+      "grading": {"mode": "retrieval", "expected_kind": "class", "expected_text_contains": "Shamaka/Vardhaka"},
+      "note": "Fine-grained vocabulary probe on an enum value (actionType: Shamaka/Vardhaka), not just the top-level term."
+    },
+    {
+      "id": "vocab-08",
+      "category": "vocabulary",
+      "question": "what does a karma category of Rejuvenative mean",
+      "grading": {"mode": "retrieval", "expected_kind": "datatype_property", "expected_text_contains": "karma category"}
+    },
+    {
+      "id": "spatial-01",
+      "category": "spatial",
+      "question": "where is Terminalia chebula found, in the TMPI dataset",
+      "grading": {
+        "mode": "agent",
+        "expected_tool": "spatial_search",
+        "expected_dataset_title": "Traded Medicinal Plants of India (TMPI)",
+        "expected_search_text": "Terminalia chebula"
+      },
+      "note": "/v2/spatial_search is a scientific-name-scoped geometry lookup (ScientificNameSearchRequest: search_text + dataset[0]==exact dataset_master.title), not a free-form polygon filter - phrase spatial questions accordingly."
+    },
+    {
+      "id": "spatial-02",
+      "category": "spatial",
+      "question": "show me the location of Terminalia chebula in the CPMP Botanical Source dataset",
+      "grading": {
+        "mode": "agent",
+        "expected_tool": "spatial_search",
+        "expected_dataset_title": "CPMP Botanical Source",
+        "expected_search_text": "Terminalia chebula"
+      }
+    },
+    {
+      "id": "spatial-03",
+      "category": "spatial",
+      "question": "give me the geographic coordinates for Haritaki in the Traded Medicinal Plants of India dataset",
+      "grading": {
+        "mode": "agent",
+        "expected_tool": "spatial_search",
+        "expected_dataset_title": "Traded Medicinal Plants of India (TMPI)",
+        "expected_search_text": "Haritaki"
+      },
+      "note": "Uses a common/vernacular name ('Haritaki') rather than the binomial - tests whether the agent resolves it to a scientific name before calling spatial_search, or passes it through and gets zero results."
+    },
+    {
+      "id": "spatial-04",
+      "category": "spatial",
+      "question": "plot Azadirachta indica occurrences from the CPMP Botanical Source data",
+      "grading": {
+        "mode": "agent",
+        "expected_tool": "spatial_search",
+        "expected_dataset_title": "CPMP Botanical Source",
+        "expected_search_text": "Azadirachta indica"
+      }
+    },
+    {
+      "id": "spatial-05",
+      "category": "spatial",
+      "question": "is there mapped location data for Rasashastra's metal and mineral records",
+      "grading": {
+        "mode": "agent",
+        "expected_tool": "reject_no_geometry",
+        "expected_dataset_title": "Rasashastra: A Database of Metals and Minerals used in Ayurveda"
+      },
+      "note": "Rasashastra is registered in dataset_master (id 89) but has no geom-backed table in ontop/mapping/cphr.obda - correct behavior is to say this dataset has no spatial data, not to call spatial_search and surface an empty/wrong result."
+    },
+    {
+      "id": "spatial-06",
+      "category": "spatial",
+      "question": "map the distribution of scientific name Withania somnifera without telling me which dataset",
+      "grading": {
+        "mode": "agent",
+        "expected_tool": "spatial_search",
+        "expected_dataset_title": null,
+        "expected_search_text": "Withania somnifera"
+      },
+      "note": "No dataset named -> exercises the legacy no-dataset path of /v2/spatial_search (searches all registered tables); agent should either call it dataset-less or ask which dataset, not silently pick one dataset title on the user's behalf."
+    },
+    {
+      "id": "cross-01",
+      "category": "cross_partner",
+      "question": "which datasets record whether a plant is traded in India",
+      "grading": {
+        "mode": "agent",
+        "expected_tool": "federated_search",
+        "expected_partner_datasets": ["Traded Medicinal Plants of India (TMPI)", "Ayurahaar – The Ahara & Nutrition Portal"]
+      },
+      "note": "Spans >=2 partner sources with matching ontology_mapping ('is_traded_in_india' on both TMPI and Ayurahaar per retrieval-index/index_meta.json) - the point of 'cross-partner' is that no single dataset_field answers it alone."
+    },
+    {
+      "id": "cross-02",
+      "category": "cross_partner",
+      "question": "compare the vernacular / common names for Terminalia chebula across all registered datasets",
+      "grading": {
+        "mode": "agent",
+        "expected_tool": "federated_search",
+        "expected_partner_datasets": [
+          "Traded Medicinal Plants of India (TMPI)",
+          "Ayurahaar – The Ahara & Nutrition Portal",
+          "CPMP Botanical Source"
+        ]
+      },
+      "note": "vernacular_name_common_names ontology_mapping appears on 3 datasets with 3 different field names (common_name, vernacular_name, commonNames) - a real fan-out test of ontology-mediated federation, not just literal field-name matching (see cphr-map-module memory: field_name vs ontology_mapping)."
+    },
+    {
+      "id": "cross-03",
+      "category": "cross_partner",
+      "question": "what recipes use this ingredient, and is it also listed as a traded drug",
+      "grading": {
+        "mode": "agent",
+        "expected_tool": "federated_search",
+        "expected_partner_datasets": ["Ayurahaar – The Ahara & Nutrition Portal", "CPMP Drug Source"]
+      },
+      "note": "Two-part question requiring two different partner sources; agent should either chain two tool calls or one federated_search fan-out covering both, not just answer the first half."
+    },
+    {
+      "id": "cross-04",
+      "category": "cross_partner",
+      "question": "find this plant in the Kew Plant Database",
+      "grading": {
+        "mode": "agent",
+        "expected_tool": "federated_search",
+        "expected_partner_datasets": ["Traded Medicinal Plants of India (TMPI)"]
+      },
+      "note": "'Kew Plant Database' is federated_sources.dataset_name, not the dataset_master.title ('Traded Medicinal Plants of India (TMPI)') that dataset_mapping/spatial_search/the retrieval index all key on - tests whether the agent resolves this alias correctly instead of treating it as an unknown/out-of-scope dataset."
+    },
+    {
+      "id": "cross-05",
+      "category": "cross_partner",
+      "question": "what is the drug name for this plant in the CPMP Drug Source dataset, and what is its Ayurahaar dosha action",
+      "grading": {
+        "mode": "agent",
+        "expected_tool": "federated_search",
+        "expected_partner_datasets": ["CPMP Drug Source", "Ayurahaar – The Ahara & Nutrition Portal"]
+      }
+    },
+    {
+      "id": "cross-06",
+      "category": "cross_partner",
+      "question": "which partner sources have any data at all on this plant",
+      "grading": {
+        "mode": "agent",
+        "expected_tool": "federated_search",
+        "expected_partner_datasets": [
+          "Traded Medicinal Plants of India (TMPI)",
+          "Rasashastra: A Database of Metals and Minerals used in Ayurveda",
+          "Ayurahaar – The Ahara & Nutrition Portal",
+          "CPMP Botanical Source",
+          "CPMP Drug Source"
+        ]
+      },
+      "note": "Broadest fan-out case - all 5 dataset_mapping-registered partners are in scope; a right answer says which ones actually returned a hit, not just which were queried."
+    },
+    {
+      "id": "oos-01",
+      "category": "out_of_scope",
+      "question": "weather forecast for Delhi",
+      "grading": {"mode": "retrieval", "expected_behavior": "reject_below_threshold"},
+      "note": "Baseline adversarial case from CPHR-89 (score ~0.24, well under 0.3)."
+    },
+    {
+      "id": "oos-02",
+      "category": "out_of_scope",
+      "question": "what is the current stock price of a pharma company",
+      "grading": {"mode": "retrieval", "expected_behavior": "reject_below_threshold"}
+    },
+    {
+      "id": "oos-03",
+      "category": "out_of_scope",
+      "question": "book me a flight to Bangalore",
+      "grading": {"mode": "retrieval", "expected_behavior": "reject_below_threshold"}
+    },
+    {
+      "id": "oos-04",
+      "category": "out_of_scope",
+      "question": "what is the maximum safe daily dosage of this plant in milligrams",
+      "grading": {"mode": "agent", "expected_behavior": "reject_known_gap"},
+      "note": "Known ontology gap: no dosage/toxicity class or property exists in cphr-ayurveda-ontology.ttl. Likely to score above 0.3 by drifting to related terms (Karma, description) since it's on-topic vocabulary-adjacent, not off-topic - so this is NOT reliably threshold-gradable and must be checked at the agent/answer level: correct behavior is 'I don't have dosage data', not a guessed number from the wrong field."
+    },
+    {
+      "id": "oos-05",
+      "category": "out_of_scope",
+      "question": "search for this plant in the WHO Global Ayurveda Registry",
+      "grading": {"mode": "agent", "expected_behavior": "reject_unregistered_dataset"},
+      "note": "Names a plausible-sounding but non-existent partner source (not in federated_sources, unlike the real 'Kew Plant Database' alias in cross-04) - agent must not silently substitute a real dataset."
+    },
+    {
+      "id": "oos-06",
+      "category": "out_of_scope",
+      "question": "recommend an Ayurvedic treatment plan for my knee pain",
+      "grading": {"mode": "agent", "expected_behavior": "reject_scope"},
+      "note": "In-domain vocabulary (dosha/karma/etc. are all real terms here) but outside the system's actual scope (a data-retrieval assistant over registered datasets, not a diagnostic/prescribing tool) - the harder out-of-scope case: retrieval will find plausible-looking hits, so rejection has to come from task framing, not the similarity score."
+    }
+  ]
+}
