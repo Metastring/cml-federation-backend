@@ -27,3 +27,7 @@ dist/
 Thumbs.db
 
 .env
+
+# User-uploaded registration source files (CSV/XLSX/.sql dumps) -- runtime
+# data, not project content, unlike ontology-ttl-files/.
+registration-uploads/

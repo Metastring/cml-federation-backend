@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app import dataset_ontology_mapping_service as svc
+from app import dataset_registration_service as registration_svc
 
 # Real "map this dataset's fields to an ontology" flow: pick an ontology
 # (predefined or custom-built), then pick which of ITS fields each dataset
@@ -52,6 +53,20 @@ def get_ontology_fields(graph_key: str):
         return svc.get_ontology_fields(graph_key)
     except Exception as exc:
         _raise_for(exc)
+
+
+@router.post("/{dataset_id}/suggest")
+def suggest_mappings(dataset_id: int, ontology_graph_key: str):
+    """Auto-suggest field -> ontology_field pairs from the source detected in
+    step 1, for the "auto" badges shown before the user adjusts anything."""
+    try:
+        return registration_svc.suggest_mappings(dataset_id, ontology_graph_key)
+    except registration_svc.SourceConfigNotFoundError as exc:
+        raise HTTPException(
+            status_code=404, detail=str(exc) or "No source detected for this dataset yet"
+        ) from exc
+    except svc.OntologyNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/{dataset_id}/mappings")

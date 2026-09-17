@@ -25,6 +25,8 @@ from app.endpoints import dataset_ontology_mapping
 from app.endpoints import ontology_publish
 from app.endpoints import cphr_search
 from app.endpoints import federated_sources
+from app.endpoints import dataset_registration
+from app.endpoints import ontology_term_proposals
 from psycopg2.extras import RealDictCursor
 
 
@@ -57,6 +59,8 @@ app.include_router(dataset_ontology_mapping.router)
 app.include_router(ontology_publish.router)
 app.include_router(cphr_search.router)
 app.include_router(federated_sources.router)
+app.include_router(dataset_registration.router)
+app.include_router(ontology_term_proposals.router)
 
 # Participant API endpoints
 CPMP_BOTANICAL_SEARCH_URL = "https://cpmp.tdu.edu.in/api/species/search/v2"

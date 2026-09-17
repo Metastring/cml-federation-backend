@@ -175,8 +175,14 @@ def save_dataset_details(details: DatasetDetailsInput):
         return {"status": "error", "error": str(e)}
 
 
-def _create_dataset_registry_from_payload(payload: DatasetRegistryInput):
-    """Core implementation for inserting dataset registry records from a parsed payload."""
+def _create_dataset_registry_from_payload(payload: DatasetRegistryInput, dataset_status: str | None = None):
+    """Core implementation for inserting dataset registry records from a parsed payload.
+
+    dataset_status writes dataset_master.status (e.g. 'draft', 'Pending review').
+    Defaults to None (column stays NULL) so the existing /dataset-registry
+    contract is unchanged; the registration-wizard draft flow
+    (app/dataset_registration_service.py) is the first caller to pass one.
+    """
     conn = get_connection()
     try:
         cur = conn.cursor()
@@ -216,15 +222,15 @@ def _create_dataset_registry_from_payload(payload: DatasetRegistryInput):
                 title, description, citation, doi, language,
                 data_language, license, publication_date,
                 metadata_modified_date, registration_date, is_active,
-                keywords, dataset_type, category_id
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                keywords, dataset_type, category_id, status
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             RETURNING dataset_id;
         """, (
             payload.title, payload.description, payload.citation,
             payload.doi, payload.language, payload.data_language,
             payload.license, system_date, system_date,
             system_date, payload.is_active, payload.keywords,
-            payload.dataset_type, category_id
+            payload.dataset_type, category_id, dataset_status
         ))
 
         dataset_id = cur.fetchone()[0]
