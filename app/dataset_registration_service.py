@@ -6,6 +6,7 @@ import re
 from contextlib import contextmanager
 from difflib import SequenceMatcher
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import UploadFile
 from openpyxl import load_workbook
@@ -25,6 +26,21 @@ from app.endpoints.dataset_details import DatasetRegistryInput, _create_dataset_
 # (.sql dump upload + static parse -- no live-credential connection, no
 # execution of the dump). Map data (shapefile/GeoTIFF) is out of scope --
 # that belongs to map-module-backend.
+#
+# --- v2 addition (2026-09-21) -------------------------------------------
+# The v2 wizard (scratch-download/registration/v2) changes the product
+# model: CPHR never takes a copy of the data, only a REFERENCE to wherever
+# it already lives (a URI, a read-only connection string, or a map service
+# layer), plus a "Verify reachability" check that reads just enough to
+# drive ontology-mapping suggestions. See save_file_reference_source,
+# save_database_reference_source, and save_map_service_source below --
+# these are additive; the v1 upload-based file/url/database functions
+# above are untouched.
+#
+# Scope decision (2026-09-21): live database verification ships for
+# PostgreSQL only -- psycopg2 is the only DB driver in requirements.txt.
+# Other engines are recorded but "Verify reachability" reports them as
+# unsupported rather than guessing at a connection library.
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = REPO_ROOT / "registration-uploads"
@@ -76,6 +92,7 @@ def create_draft(payload: DatasetRegistryInput) -> dict:
 _DRAFT_UPDATABLE_COLUMNS = {
     "title", "description", "citation", "doi", "language", "data_language",
     "license", "keywords", "dataset_type", "category_id",
+    "node_name", "node_maintained_by",
 }
 
 
@@ -425,11 +442,43 @@ def list_term_proposals(status: str | None = None) -> list[dict]:
 # Step 3 -- review & publish
 # ---------------------------------------------------------------------------
 
+def _reference_type_label(source_type: str | None, reference_uri: str | None = None) -> str | None:
+    """Human-readable "Reference type" line for the review/success screen,
+    e.g. "File path (s3://)" -- matching the v2 mockup's summary list."""
+    if source_type == "file":
+        scheme = _reference_uri_scheme(reference_uri) if reference_uri else ""
+        return f"File path ({scheme}://)" if scheme else "File path"
+    return {
+        "url": "URL / API",
+        "database": "Database",
+        "map_service": "Map service",
+    }.get(source_type)
+
+
+def _reference_location(source: dict | None) -> str | None:
+    """The one value worth showing back to the contributor for "Data
+    location" -- never the raw db_connection_string (that stays server-side
+    even here; the table/view name is the useful, non-sensitive part)."""
+    if not source:
+        return None
+    return {
+        "file": source.get("reference_uri") or source.get("file_path"),
+        "url": source.get("source_url"),
+        "database": source.get("selected_table_name"),
+        "map_service": source.get("map_layer_name"),
+    }.get(source.get("source_type"))
+
+
 def get_review_summary(dataset_id: int) -> dict:
     with _cursor() as cur:
         dataset = _dataset_row(cur, dataset_id)
         if not dataset:
             raise DatasetNotFoundError(dataset_id)
+
+        cur.execute(
+            "SELECT category_name FROM category_master WHERE category_id = %s", (dataset["category_id"],)
+        )
+        category_row = cur.fetchone()
 
         cur.execute("SELECT * FROM dataset_source_config WHERE dataset_id = %s", (dataset_id,))
         source = cur.fetchone()
@@ -444,8 +493,17 @@ def get_review_summary(dataset_id: int) -> dict:
         "dataset_id": dataset_id,
         "title": dataset["title"],
         "category_id": dataset["category_id"],
+        "category_name": category_row["category_name"] if category_row else None,
         "status": dataset["status"],
+        "node_name": dataset.get("node_name"),
+        "node_maintained_by": dataset.get("node_maintained_by"),
         "source_type": source["source_type"] if source else None,
+        "reference_type_label": _reference_type_label(
+            source["source_type"] if source else None,
+            source.get("reference_uri") if source else None,
+        ),
+        "reference_location": _reference_location(source),
+        "reachability_status": source.get("reachability_status") if source else None,
         "fields_detected": fields_detected,
         "fields_mapped": fields_mapped,
     }
@@ -468,3 +526,289 @@ def publish(dataset_id: int) -> dict:
         pass  # best-effort reindex -- publish must succeed even if this fails
 
     return row
+
+
+# ---------------------------------------------------------------------------
+# v2 -- reference-based sources ("Point to your data"). Each save_* function
+# stores where the data lives; each verify_* function is the "Verify
+# reachability" button -- it reads just enough to confirm the reference is
+# real and, where practical, detect fields for step 2's mapping suggestions.
+# Nothing here ever copies the contributor's underlying records.
+# ---------------------------------------------------------------------------
+
+def _reference_uri_scheme(uri: str) -> str:
+    """Lowercase URI scheme, or '' for a bare filesystem path (no scheme)."""
+    return urlsplit(uri or "").scheme.lower()
+
+
+def _split_schema_table(table_name: str) -> tuple[str, str]:
+    """'public.plot_observations' -> ('public', 'plot_observations').
+
+    A bare table name with no schema defaults to 'public', matching
+    Postgres's own default search_path behaviour.
+    """
+    parts = (table_name or "").strip().split(".", 1)
+    return (parts[0], parts[1]) if len(parts) == 2 else ("public", parts[0])
+
+
+def _redact_connection_string(conn_str: str | None) -> str | None:
+    """Mask the password in a connection string before it's ever echoed back
+    over the API -- the frontend only needs to confirm what it already
+    submitted, not have the password reflected at it again."""
+    if not conn_str:
+        return conn_str
+    parts = urlsplit(conn_str)
+    if not parts.password:
+        return conn_str
+    netloc = parts.netloc.replace(f":{parts.password}@", ":****@", 1)
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+def _public_source_config(row: dict) -> dict:
+    """Return a source_config row safe to hand to the frontend -- with any
+    stored connection-string password redacted."""
+    row = dict(row)
+    if "db_connection_string" in row:
+        row["db_connection_string"] = _redact_connection_string(row["db_connection_string"])
+    return row
+
+
+def _capabilities_request_params(layer_type: str | None) -> dict:
+    """Map a wizard layer-type choice to the OGC GetCapabilities query it
+    implies. Accepts either the mockup's display label ("Vector (WFS)") or
+    a bare service code ("WFS") so the frontend doesn't have to translate."""
+    normalized = (layer_type or "").upper()
+    if "WFS" in normalized:
+        service = "WFS"
+    elif "WMTS" in normalized:
+        service = "WMTS"
+    else:
+        service = "WMS"
+    return {"service": service, "request": "GetCapabilities"}
+
+
+def save_file_reference_source(
+    dataset_id: int, reference_uri: str, file_format: str | None, access_credentials_ref: str | None
+) -> dict:
+    """Step 2 (file path): record where the file already lives. Never
+    fetched in full here -- verify_file_reference reads a header only."""
+    with _cursor() as cur:
+        if not _dataset_row(cur, dataset_id):
+            raise DatasetNotFoundError(dataset_id)
+        return _upsert_source_config(
+            cur, dataset_id,
+            source_type="file",
+            reference_uri=reference_uri,
+            file_format=file_format,
+            access_credentials_ref=access_credentials_ref,
+            reachability_status="unverified",
+            reachability_checked_at=None,
+            reachability_detail=None,
+        )
+
+
+async def verify_file_reference(dataset_id: int) -> dict:
+    """"Verify reachability" for a file reference. http(s) URIs get a
+    ranged GET to sniff a header row; other schemes (s3://, nfs://, smb://,
+    or a bare local path) can't be resolved from this process without
+    scheme-specific credentials/drivers we don't have, so they're reported
+    as 'unverified' with an explanation rather than guessed at."""
+    with _cursor() as cur:
+        cur.execute("SELECT * FROM dataset_source_config WHERE dataset_id = %s", (dataset_id,))
+        config = cur.fetchone()
+    if not config or not config.get("reference_uri"):
+        raise SourceConfigNotFoundError(dataset_id)
+
+    uri = config["reference_uri"]
+    scheme = _reference_uri_scheme(uri)
+    detected_fields = None
+
+    if scheme in ("http", "https"):
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                response = await client.get(uri, headers={"Range": "bytes=0-8191"})
+            if response.status_code in (200, 206):
+                status, detail = "reachable", f"Reachable · HTTP {response.status_code}"
+                file_format = (config.get("file_format") or "").lower()
+                if file_format == "csv":
+                    first_line = response.text.splitlines()[0] if response.text else ""
+                    header = [h.strip() for h in first_line.split(",") if h.strip()]
+                    if header:
+                        detected_fields = [{"field_name": h, "sample_value": None} for h in header]
+                        detail += f" · {len(header)} columns detected in header"
+            else:
+                status, detail = "unreachable", f"Server responded HTTP {response.status_code}"
+        except Exception as exc:
+            status, detail = "unreachable", str(exc)[:500]
+    else:
+        status = "unverified"
+        detail = (
+            f"Reachability checks aren't supported yet for '{scheme or 'local path'}' references -- "
+            "confirm manually that this path is reachable from the node before publishing."
+        )
+
+    with _cursor() as cur:
+        cur.execute(
+            """
+            UPDATE dataset_source_config
+            SET reachability_status = %s, reachability_checked_at = NOW(), reachability_detail = %s,
+                detected_fields = COALESCE(%s, detected_fields), updated_at = NOW()
+            WHERE dataset_id = %s
+            RETURNING *
+            """,
+            (status, detail, Json(detected_fields) if detected_fields is not None else None, dataset_id),
+        )
+        return dict(cur.fetchone())
+
+
+def save_database_reference_source(
+    dataset_id: int, connection_string: str, table_name: str, engine: str
+) -> dict:
+    """Step 2 (database): record a read-only connection string + which
+    table/view to register. Never connects here -- that's
+    verify_database_reference, called explicitly via "Verify reachability"."""
+    with _cursor() as cur:
+        if not _dataset_row(cur, dataset_id):
+            raise DatasetNotFoundError(dataset_id)
+        row = _upsert_source_config(
+            cur, dataset_id,
+            source_type="database",
+            db_connection_string=connection_string,
+            db_engine=engine,
+            selected_table_name=table_name,
+            reachability_status="unverified",
+            reachability_checked_at=None,
+            reachability_detail=None,
+        )
+    return _public_source_config(row)
+
+
+def verify_database_reference(dataset_id: int) -> dict:
+    """"Verify reachability" for a database reference -- PostgreSQL only
+    this pass (see module docstring). Connects read-only, reads column
+    names from information_schema, and never touches row data."""
+    with _cursor() as cur:
+        cur.execute("SELECT * FROM dataset_source_config WHERE dataset_id = %s", (dataset_id,))
+        config = cur.fetchone()
+    if not config or not config.get("db_connection_string"):
+        raise SourceConfigNotFoundError(dataset_id)
+
+    engine = (config.get("db_engine") or "").strip().lower()
+    detected_fields = None
+
+    if engine not in ("postgresql", "postgres"):
+        status = "unsupported"
+        detail = f"Live verification for '{config.get('db_engine') or 'this engine'}' isn't built yet -- only PostgreSQL is supported this pass."
+    else:
+        import psycopg2
+
+        schema, table = _split_schema_table(config.get("selected_table_name") or "")
+        try:
+            live_conn = psycopg2.connect(
+                config["db_connection_string"],
+                connect_timeout=5,
+                options="-c default_transaction_read_only=on",
+            )
+            try:
+                live_cur = live_conn.cursor(cursor_factory=RealDictCursor)
+                live_cur.execute(
+                    """
+                    SELECT column_name, data_type FROM information_schema.columns
+                    WHERE table_schema = %s AND table_name = %s
+                    ORDER BY ordinal_position
+                    """,
+                    (schema, table),
+                )
+                columns = live_cur.fetchall()
+            finally:
+                live_conn.close()
+
+            if not columns:
+                status, detail = "unreachable", f"Connected, but table '{schema}.{table}' was not found or has no columns"
+            else:
+                detected_fields = [{"field_name": c["column_name"], "data_type": c["data_type"]} for c in columns]
+                status, detail = "reachable", f"Connected read-only · {len(detected_fields)} columns detected"
+        except Exception as exc:
+            status, detail = "unreachable", str(exc)[:500]
+
+    with _cursor() as cur:
+        cur.execute(
+            """
+            UPDATE dataset_source_config
+            SET reachability_status = %s, reachability_checked_at = NOW(), reachability_detail = %s,
+                detected_fields = COALESCE(%s, detected_fields), updated_at = NOW()
+            WHERE dataset_id = %s
+            RETURNING *
+            """,
+            (status, detail, Json(detected_fields) if detected_fields is not None else None, dataset_id),
+        )
+        row = dict(cur.fetchone())
+    return _public_source_config(row)
+
+
+def save_map_service_source(
+    dataset_id: int, map_service_url: str, layer_type: str, map_layer_name: str
+) -> dict:
+    """Step 2 (map service): record an already-hosted WMS/WFS/WMTS layer.
+    This is a reference to the contributor's own GeoServer/MapServer --
+    unrelated to map-module-backend, which hosts CPHR's own layers."""
+    with _cursor() as cur:
+        if not _dataset_row(cur, dataset_id):
+            raise DatasetNotFoundError(dataset_id)
+        return _upsert_source_config(
+            cur, dataset_id,
+            source_type="map_service",
+            map_service_url=map_service_url,
+            layer_type=layer_type,
+            map_layer_name=map_layer_name,
+            reachability_status="unverified",
+            reachability_checked_at=None,
+            reachability_detail=None,
+        )
+
+
+async def verify_map_service(dataset_id: int) -> dict:
+    """"Verify reachability" for a map service reference: fetch
+    GetCapabilities and confirm the named layer appears in it. The layer
+    keeps rendering from the contributor's own server either way -- this
+    only reads the capabilities/attribute-schema document."""
+    with _cursor() as cur:
+        cur.execute("SELECT * FROM dataset_source_config WHERE dataset_id = %s", (dataset_id,))
+        config = cur.fetchone()
+    if not config or not config.get("map_service_url"):
+        raise SourceConfigNotFoundError(dataset_id)
+
+    import httpx
+
+    layer_name = config.get("map_layer_name")
+    params = _capabilities_request_params(config.get("layer_type"))
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            response = await client.get(config["map_service_url"], params=params)
+        if response.status_code == 200:
+            body_lower = response.text.lower()
+            if layer_name and layer_name.lower() not in body_lower:
+                status = "reachable"
+                detail = f"Reachable · GetCapabilities OK -- but layer '{layer_name}' wasn't found in it. Double-check the layer name."
+            else:
+                status = "reachable"
+                detail = "Reachable · GetCapabilities OK" + (f" · layer '{layer_name}' found" if layer_name else "")
+        else:
+            status, detail = "unreachable", f"Server responded HTTP {response.status_code}"
+    except Exception as exc:
+        status, detail = "unreachable", str(exc)[:500]
+
+    with _cursor() as cur:
+        cur.execute(
+            """
+            UPDATE dataset_source_config
+            SET reachability_status = %s, reachability_checked_at = NOW(), reachability_detail = %s, updated_at = NOW()
+            WHERE dataset_id = %s
+            RETURNING *
+            """,
+            (status, detail, dataset_id),
+        )
+        return dict(cur.fetchone())

@@ -90,6 +90,11 @@ class DatasetRegistryInput(BaseModel):
     keywords: Optional[str] = None
     dataset_type: Optional[str] = None
 
+    # v2 registration wizard: the node the data is federated from, not
+    # stored anywhere else on dataset_master.
+    node_name: Optional[str] = None
+    node_maintained_by: Optional[str] = None
+
     # related records
     publishers: Optional[List[Publisher]] = []
     contacts: Optional[List[Contact]] = []
@@ -222,15 +227,17 @@ def _create_dataset_registry_from_payload(payload: DatasetRegistryInput, dataset
                 title, description, citation, doi, language,
                 data_language, license, publication_date,
                 metadata_modified_date, registration_date, is_active,
-                keywords, dataset_type, category_id, status
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                keywords, dataset_type, category_id, status,
+                node_name, node_maintained_by
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             RETURNING dataset_id;
         """, (
             payload.title, payload.description, payload.citation,
             payload.doi, payload.language, payload.data_language,
             payload.license, system_date, system_date,
             system_date, payload.is_active, payload.keywords,
-            payload.dataset_type, category_id, dataset_status
+            payload.dataset_type, category_id, dataset_status,
+            payload.node_name, payload.node_maintained_by
         ))
 
         dataset_id = cur.fetchone()[0]
@@ -299,7 +306,7 @@ def _create_dataset_registry_from_payload(payload: DatasetRegistryInput, dataset
             pass
 
 
-@router.post("/dataset-registry")
+@router.post("/dataset-registry", tags=["Registration APIs"])
 async def create_dataset_registry(
     payload: DatasetRegistryInput | None = None,
     file: UploadFile | None = File(None),

@@ -5,7 +5,7 @@ from psycopg2.extras import RealDictCursor
 router = APIRouter()
 
 
-@router.get("/categories")
+@router.get("/categories", tags=["Registration APIs"])
 def get_categories():
     conn = get_connection()
     try:

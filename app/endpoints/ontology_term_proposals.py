@@ -10,7 +10,7 @@ from app import dataset_registration_service as svc
 # they don't write into custom_ontology directly (product decision
 # 2026-09-16). Approving/rejecting a proposal is a future moderation UI's
 # job, not built here.
-router = APIRouter(prefix="/ontology/terms", tags=["ontology-term-proposals"])
+router = APIRouter(prefix="/ontology/terms", tags=["Registration APIs"])
 
 
 class ProposeTermInput(BaseModel):

@@ -12,7 +12,7 @@ from app import dataset_registration_service as registration_svc
 # endpoints (app/endpoints/dataset_details.py) as the next step after
 # POST /dataset-registry, without touching that file's frontend-facing
 # /dataset-mapping-update contract.
-router = APIRouter(prefix="/dataset-ontology-mapping", tags=["dataset-ontology-mapping"])
+router = APIRouter(prefix="/dataset-ontology-mapping", tags=["Registration APIs"])
 
 
 class MappingEntry(BaseModel):
