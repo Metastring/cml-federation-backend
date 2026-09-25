@@ -605,6 +605,21 @@ def _merge_dataset_entries(participant_entry: dict, map_entry: dict) -> dict:
     }
 
 
+# Categories the federated search routes accept. Biodiversity is the original
+# one (external participants + map layers); Climate and Environment were added
+# with the IMD rainfall and CPCB AQI datasets. Matched case-insensitively.
+SEARCHABLE_CATEGORIES = ("Biodiversity", "Climate", "Environment")
+
+
+def _require_searchable_category(categories: list[str]) -> None:
+    allowed = {c.lower() for c in SEARCHABLE_CATEGORIES}
+    if not any(c.strip().lower() in allowed for c in categories):
+        raise HTTPException(
+            status_code=400,
+            detail=f"At least one category must be one of: {', '.join(SEARCHABLE_CATEGORIES)}.",
+        )
+
+
 # Updated request payload model
 class FederatedSearchRequest(BaseModel):
     category: list[str]
@@ -1082,8 +1097,7 @@ def _cpmp_distribute_results(
 @app.post("/federated-search")
 async def federated_search(payload: FederatedSearchRequest = Body(...)):
     # Check category
-    if "biodiversity" not in [c.lower() for c in payload.category]:
-        raise HTTPException(status_code=400, detail="At least one category must be 'biodiversity'.")
+    _require_searchable_category(payload.category)
 
     # Build a normalized lookup so that small differences (case,
     # curly vs straight apostrophe) do not break matching.
@@ -1471,8 +1485,7 @@ async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
     Cached results (TTL=PRE_SEARCH_CACHE_TTL env var, default 5 min) are
     streamed immediately without hitting any external API.
     """
-    if "biodiversity" not in [c.lower() for c in payload.category]:
-        raise HTTPException(status_code=400, detail="At least one category must be 'biodiversity'.")
+    _require_searchable_category(payload.category)
 
     search_text = payload.search_text.strip()
     if not search_text:
@@ -1763,11 +1776,7 @@ async def federated_search_with_ontology(payload: FederatedSearchRequest = Body(
       2. Looks up which datasets have that field registered in dataset_mapping.
       3. Searches ONLY those datasets for the given search_text.
     """
-    if "biodiversity" not in [c.lower() for c in payload.category]:
-        raise HTTPException(
-            status_code=400,
-            detail="At least one category must be 'biodiversity'.",
-        )
+    _require_searchable_category(payload.category)
 
     if not payload.fields:
         raise HTTPException(
@@ -1963,11 +1972,7 @@ async def federated_search_with_strict_ontology_check(payload: FederatedSearchRe
     vernacular_name_common_names) are rejected with an empty result for that field.
     Dataset routing (Steps 2-6) is unchanged.
     """
-    if "biodiversity" not in [c.lower() for c in payload.category]:
-        raise HTTPException(
-            status_code=400,
-            detail="At least one category must be 'biodiversity'.",
-        )
+    _require_searchable_category(payload.category)
 
     if not payload.fields:
         raise HTTPException(
