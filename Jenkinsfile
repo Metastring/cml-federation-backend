@@ -12,6 +12,7 @@ pipeline {
                 rsync -av --delete \
                   --no-owner \
                   --no-group \
+                  --chown=metastring:metastring \
                   --no-perms \
                   --omit-dir-times \
                   --exclude '.git/' \

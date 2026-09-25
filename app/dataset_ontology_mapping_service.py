@@ -70,16 +70,7 @@ def list_registered_ontologies() -> list[dict]:
 
 
 def _predefined_fields(graph_key: str) -> list[dict]:
-    if graph_key != "ayurveda":
-        # cphr_ontology_service.py reads one hardcoded TTL path (env-overridable
-        # but effectively a singleton) -- it isn't parameterized by graph_key,
-        # so a second predefined-style ontology registered via the generic
-        # POST /ontology/ttl/{graph_key} upload wouldn't be readable here yet.
-        raise OntologyNotFoundError(
-            f"No field reader wired up for predefined ontology {graph_key!r} yet "
-            "(cphr_ontology_service.py only reads the 'ayurveda' TTL)"
-        )
-    snapshot = load_ontology_snapshot()
+    snapshot = load_ontology_snapshot(graph_key)
     fields = []
     for prop in snapshot["datatype_properties"] + snapshot["object_properties"]:
         fields.append(

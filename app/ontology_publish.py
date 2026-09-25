@@ -30,13 +30,10 @@ _REGISTRY_INDEX_PATH = _ONTOLOGY_TTL_DIR / "_registry.json"
 
 _GRAPH_KEY_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 
-_BOOTSTRAP_REGISTRY = {
-    "ayurveda": {
-        "label": "CPHR Ayurveda / Dravyaguna Ontology",
-        "file_path": "cphr-ayurveda-ontology.ttl",
-        "fuseki_graph": "http://cml.org/ontology/ayurveda",
-    },
-}
+# Empty on purpose: the Ayurveda ontology was replaced on 2026-09-25 by the 13
+# standard ontologies tracked in _registry.json, so a missing registry file
+# must not resurrect an entry pointing at a deleted TTL.
+_BOOTSTRAP_REGISTRY: dict[str, dict[str, str]] = {}
 
 
 class OntologyKeyError(KeyError):
