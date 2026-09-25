@@ -1,7 +1,10 @@
 
 from fastapi import FastAPI, HTTPException, Body
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from datetime import date
+from typing import Literal
+
+from pydantic import BaseModel, Field
 import httpx
 import asyncio
 import json
@@ -627,6 +630,41 @@ class FederatedSearchRequest(BaseModel):
     fields: list[str]
     search_text: str
     display_fields: list[str] = []
+    # Paging / filtering for local datasets (tables in this backend's DB).
+    # External participant APIs ignore these. All optional, so existing
+    # callers get the old behaviour: first 100 matches, unordered.
+    limit: int = Field(default=100, ge=1, le=1000, description="Rows per local dataset")
+    offset: int = Field(default=0, ge=0, description="Rows to skip per local dataset")
+    date_from: date | None = Field(default=None, description="Inclusive; tables with a date column only")
+    date_to: date | None = Field(default=None, description="Inclusive; tables with a date column only")
+    sort: Literal["date_asc", "date_desc"] | None = Field(
+        default=None, description="Order by the table's date column; tables without one are unordered"
+    )
+
+
+def _local_search_options(payload: "FederatedSearchRequest") -> dict:
+    return {
+        "limit": payload.limit,
+        "offset": payload.offset,
+        "date_from": payload.date_from,
+        "date_to": payload.date_to,
+        "sort": payload.sort,
+    }
+
+
+def _local_paging_info(map_res: dict) -> dict:
+    """Dataset-level paging summary returned next to field_results, so a
+    client can tell 100 shown rows from 100 total matches."""
+    return {
+        "total_count": map_res.get("total_count"),
+        "returned_count": len(map_res.get("results") or []),
+        "limit": map_res.get("limit"),
+        "offset": map_res.get("offset"),
+        "date_column": map_res.get("date_column"),
+        "date_from": map_res.get("date_from"),
+        "date_to": map_res.get("date_to"),
+        "sort": map_res.get("sort"),
+    }
 
 async def fetch_from_participant(client, participant_name: str, url: str, field: str, query: str):
     try:
@@ -976,12 +1014,23 @@ async def fetch_from_participant(client, participant_name: str, url: str, field:
 
 
 async def _fetch_map_dataset_results(
-    dataset_name: str, search_text: str
+    dataset_name: str,
+    search_text: str,
+    limit: int = 100,
+    offset: int = 0,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    sort: str | None = None,
 ) -> dict | None:
     """Query a local map-module dataset for federated search results.
 
-    Returns a dict with keys 'results' (list of row dicts) and 'table_name',
-    or None if the dataset is not found in the local map DB.
+    Returns a dict with keys 'results' (list of row dicts), 'table_name' and
+    'total_count' (all matches, before limit/offset), or None if the dataset
+    is not found in the local map DB.
+
+    date_from/date_to/sort apply to the table's date column -- a column named
+    'date', else the first date/timestamp column -- and are ignored (reported
+    as date_column=None) for tables that have none.
     """
     conn = get_connection()
     try:
@@ -1025,6 +1074,40 @@ async def _fetch_map_dataset_results(
         conditions = " OR ".join(
             f'LOWER(t."{col}") LIKE %(term)s' for col in text_columns
         )
+
+        cursor.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = %s
+              AND table_name = %s
+              AND data_type IN ('date', 'timestamp without time zone', 'timestamp with time zone')
+            ORDER BY (column_name = 'date') DESC, ordinal_position
+            LIMIT 1
+            """,
+            (MAP_DB_SCHEMA, table_name),
+        )
+        date_row = cursor.fetchone()
+        date_column = date_row["column_name"] if date_row else None
+
+        where = f"({conditions})"
+        params: dict = {"term": like_term, "limit": limit, "offset": offset}
+        if date_column and date_from:
+            where += f' AND t."{date_column}" >= %(date_from)s'
+            params["date_from"] = date_from
+        if date_column and date_to:
+            # Inclusive whole day, also for timestamp columns.
+            where += f" AND t.\"{date_column}\" < (%(date_to)s::date + INTERVAL '1 day')"
+            params["date_to"] = date_to
+        order_by = ""
+        if date_column and sort in ("date_asc", "date_desc"):
+            order_by = f' ORDER BY t."{date_column}" {"DESC" if sort == "date_desc" else "ASC"} NULLS LAST'
+
+        cursor.execute(
+            f'SELECT COUNT(*) AS n FROM {MAP_DB_SCHEMA}."{table_name}" t WHERE {where}',
+            params,
+        )
+        total_count = cursor.fetchone()["n"]
         # Fetch all columns except geom (raw binary) and dataset_id
         cursor.execute(
             """
@@ -1040,14 +1123,25 @@ async def _fetch_map_dataset_results(
             select_cols = "*"
 
         cursor.execute(
-            f'SELECT {select_cols} FROM {MAP_DB_SCHEMA}."{table_name}" t WHERE {conditions} LIMIT 100',
-            {"term": like_term},
+            f'SELECT {select_cols} FROM {MAP_DB_SCHEMA}."{table_name}" t WHERE {where}{order_by} '
+            'LIMIT %(limit)s OFFSET %(offset)s',
+            params,
         )
         rows = [
             {k: (None if isinstance(v, float) and not math.isfinite(v) else v) for k, v in dict(r).items()}
             for r in cursor.fetchall()
         ]
-        return {"results": rows, "table_name": table_name}
+        return {
+            "results": rows,
+            "table_name": table_name,
+            "total_count": total_count,
+            "limit": limit,
+            "offset": offset,
+            "date_column": date_column,
+            "date_from": date_from if date_column else None,
+            "date_to": date_to if date_column else None,
+            "sort": sort if date_column else None,
+        }
     except Exception as e:
         return {"results": [], "error": str(e)}
     finally:
@@ -1119,7 +1213,7 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
     map_dataset_results: dict[str, dict] = {}
     still_invalid: list[str] = []
     for ds in invalid_datasets:
-        map_result = await _fetch_map_dataset_results(ds, payload.search_text)
+        map_result = await _fetch_map_dataset_results(ds, payload.search_text, **_local_search_options(payload))
         if map_result is not None:
             map_dataset_results[ds] = map_result
         else:
@@ -1224,6 +1318,7 @@ async def federated_search(payload: FederatedSearchRequest = Body(...)):
             "api_url": f"local:{map_res.get('table_name', ds_name)}",
             "field_results": field_results,
             "is_occurrence_available": occurrence_flags.get(ds_name, True),
+            "paging": _local_paging_info(map_res),
         }
 
     valid_datasets = [name for (name, _url) in resolved_participants] + list(map_dataset_results.keys())
@@ -1834,7 +1929,7 @@ async def federated_search_with_ontology(payload: FederatedSearchRequest = Body(
     map_dataset_results: dict[str, dict] = {}
     still_invalid: list[str] = []
     for ds in unresolved:
-        map_result = await _fetch_map_dataset_results(ds, payload.search_text)
+        map_result = await _fetch_map_dataset_results(ds, payload.search_text, **_local_search_options(payload))
         if map_result is not None:
             map_dataset_results[ds] = map_result
         else:
@@ -1940,6 +2035,7 @@ async def federated_search_with_ontology(payload: FederatedSearchRequest = Body(
             "api_url": f"local:{map_res.get('table_name', ds_name)}",
             "field_results": field_results,
             "is_occurrence_available": occurrence_flags.get(ds_name, True),
+            "paging": _local_paging_info(map_res),
         }
 
     valid_datasets = (
@@ -2029,7 +2125,7 @@ async def federated_search_with_strict_ontology_check(payload: FederatedSearchRe
     map_dataset_results: dict[str, dict] = {}
     still_invalid: list[str] = []
     for ds in unresolved:
-        map_result = await _fetch_map_dataset_results(ds, payload.search_text)
+        map_result = await _fetch_map_dataset_results(ds, payload.search_text, **_local_search_options(payload))
         if map_result is not None:
             map_dataset_results[ds] = map_result
         else:
@@ -2134,6 +2230,7 @@ async def federated_search_with_strict_ontology_check(payload: FederatedSearchRe
             "api_url": f"local:{map_res.get('table_name', ds_name)}",
             "field_results": field_results,
             "is_occurrence_available": occurrence_flags.get(ds_name, True),
+            "paging": _local_paging_info(map_res),
         }
 
     valid_datasets = (
