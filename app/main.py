@@ -1,5 +1,5 @@
 
-from fastapi import FastAPI, HTTPException, Body
+from fastapi import FastAPI, HTTPException, Body, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from datetime import date
 from typing import Literal
@@ -31,6 +31,8 @@ from app.endpoints import federated_sources
 from app.endpoints import dataset_registration
 from app.endpoints import ontology_term_proposals
 from app.endpoints import node_federation
+from app.endpoints import federation as federation_endpoints
+from app import federation_search
 from psycopg2.extras import RealDictCursor
 
 
@@ -66,6 +68,7 @@ app.include_router(federated_sources.router)
 app.include_router(dataset_registration.router)
 app.include_router(ontology_term_proposals.router)
 app.include_router(node_federation.router)
+app.include_router(federation_endpoints.router)
 
 # Participant API endpoints
 CPMP_BOTANICAL_SEARCH_URL = "https://cpmp.tdu.edu.in/api/species/search/v2"
@@ -640,6 +643,13 @@ class FederatedSearchRequest(BaseModel):
     sort: Literal["date_asc", "date_desc"] | None = Field(
         default=None, description="Order by the table's date column; tables without one are unordered"
     )
+    # Cross-node search (FEDERATION_ARCHITECTURE.md §13). "federation" also
+    # searches every active peer node's datasets; "local" searches only this
+    # node. Requests forwarded between nodes are always run as "local".
+    scope: Literal["local", "federation"] = Field(
+        default="federation",
+        description="'federation' = this node + all active peer nodes (default); 'local' = this node only",
+    )
 
 
 def _local_search_options(payload: "FederatedSearchRequest") -> dict:
@@ -1189,7 +1199,13 @@ def _cpmp_distribute_results(
 
 
 @app.post("/federated-search")
-async def federated_search(payload: FederatedSearchRequest = Body(...)):
+async def federated_search(request: Request, payload: FederatedSearchRequest = Body(...)):
+    """scope="federation" (default) also searches peer nodes; see app/federation_search.py."""
+    _require_searchable_category(payload.category)
+    return await federation_search.federate(request, "/federated-search", payload, _federated_search_local)
+
+
+async def _federated_search_local(payload: FederatedSearchRequest):
     # Check category
     _require_searchable_category(payload.category)
 
@@ -1861,7 +1877,13 @@ def _get_datasets_for_ontology_field(field: str) -> list[str]:
 
 
 @app.post("/federated-search-with-ontology")
-async def federated_search_with_ontology(payload: FederatedSearchRequest = Body(...)):
+async def federated_search_with_ontology(request: Request, payload: FederatedSearchRequest = Body(...)):
+    """scope="federation" (default) also searches peer nodes; see app/federation_search.py."""
+    _require_searchable_category(payload.category)
+    return await federation_search.federate(request, "/federated-search-with-ontology", payload, _federated_search_with_ontology_local)
+
+
+async def _federated_search_with_ontology_local(payload: FederatedSearchRequest):
     """
     Ontology-routed federated search.
 
@@ -2058,7 +2080,13 @@ async def federated_search_with_ontology(payload: FederatedSearchRequest = Body(
 # ── federated-search-with-strict-ontology-check ─────────────────────────────
 
 @app.post("/federated-search-with-strict-ontology-check")
-async def federated_search_with_strict_ontology_check(payload: FederatedSearchRequest = Body(...)):
+async def federated_search_with_strict_ontology_check(request: Request, payload: FederatedSearchRequest = Body(...)):
+    """scope="federation" (default) also searches peer nodes; see app/federation_search.py."""
+    _require_searchable_category(payload.category)
+    return await federation_search.federate(request, "/federated-search-with-strict-ontology-check", payload, _federated_search_with_strict_ontology_check_local)
+
+
+async def _federated_search_with_strict_ontology_check_local(payload: FederatedSearchRequest):
     """
     Strict-ontology federated search.
 

@@ -259,6 +259,15 @@ def list_nodes(include_inactive: bool = False) -> list[dict]:
     return [_row_to_dict(r) for r in rows]
 
 
+def _purge_federated_cache(cursor, base_url: str) -> None:
+    """Revoked nodes drop out of search, and their harvested catalog goes
+    with them (§6: "cached data purged"). The table only exists once the
+    Phase 2 migration (20260925_federated_dataset_cache.sql) is applied."""
+    cursor.execute("SELECT to_regclass('federated_dataset_cache') AS t")
+    if cursor.fetchone()["t"]:
+        cursor.execute("DELETE FROM federated_dataset_cache WHERE origin_base_url = %s", (base_url.rstrip("/"),))
+
+
 def detach_self(api_key: str, revoke_key: bool) -> dict:
     """`POST /nodes/self/detach` (§6). Node-initiated, identified by its own
     API key rather than a path id. `revoke_key=false` is the soft/reversible
@@ -276,6 +285,7 @@ def detach_self(api_key: str, revoke_key: bool) -> dict:
                 "WHERE node_id = %s",
                 (row["node_id"],),
             )
+            _purge_federated_cache(cursor, row["base_url"])
         else:
             cursor.execute(
                 "UPDATE node_registry SET status = 'detached' WHERE node_id = %s",
@@ -300,12 +310,13 @@ def revoke_node(node_id: str) -> dict:
     conn = get_connection()
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        _find_by_id(cursor, node_id)
+        row = _find_by_id(cursor, node_id)
         cursor.execute(
             "UPDATE node_registry SET status = 'revoked', api_key_hash = NULL "
             "WHERE node_id = %s",
             (node_id,),
         )
+        _purge_federated_cache(cursor, row["base_url"])
         _log_event(cursor, node_id, "revoke", "admin-initiated")
         conn.commit()
     finally:
