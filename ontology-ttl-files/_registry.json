@@ -1,7 +1,67 @@
 {
-  "ayurveda": {
-    "file_path": "cphr-ayurveda-ontology.ttl",
-    "fuseki_graph": "http://cml.org/ontology/ayurveda",
-    "label": "CPHR Ayurveda / Dravyaguna Ontology"
+  "cf-standard-names": {
+    "file_path": "cf-standard-names.ttl",
+    "fuseki_graph": "http://cml.org/ontology/cf-standard-names",
+    "label": "CF Standard Names (NERC NVS P07)"
+  },
+  "dcat3": {
+    "file_path": "dcat3.ttl",
+    "fuseki_graph": "http://cml.org/ontology/dcat3",
+    "label": "W3C DCAT 3 (catalog)"
+  },
+  "doid": {
+    "file_path": "doid.ttl",
+    "fuseki_graph": "http://cml.org/ontology/doid",
+    "label": "Human Disease Ontology (DOID)"
+  },
+  "envo": {
+    "file_path": "envo.ttl",
+    "fuseki_graph": "http://cml.org/ontology/envo",
+    "label": "Environment Ontology (ENVO)"
+  },
+  "geosparql": {
+    "file_path": "geosparql.ttl",
+    "fuseki_graph": "http://cml.org/ontology/geosparql",
+    "label": "OGC GeoSPARQL (1.3 draft)"
+  },
+  "oeo": {
+    "file_path": "oeo.ttl",
+    "fuseki_graph": "http://cml.org/ontology/oeo",
+    "label": "Open Energy Ontology (OEO)"
+  },
+  "qb": {
+    "file_path": "qb.ttl",
+    "fuseki_graph": "http://cml.org/ontology/qb",
+    "label": "W3C RDF Data Cube"
+  },
+  "qudt-quantitykind": {
+    "file_path": "qudt-quantitykind.ttl",
+    "fuseki_graph": "http://cml.org/ontology/qudt-quantitykind",
+    "label": "QUDT quantity kinds"
+  },
+  "qudt-unit": {
+    "file_path": "qudt-unit.ttl",
+    "fuseki_graph": "http://cml.org/ontology/qudt-unit",
+    "label": "QUDT units"
+  },
+  "skos": {
+    "file_path": "skos.ttl",
+    "fuseki_graph": "http://cml.org/ontology/skos",
+    "label": "W3C SKOS"
+  },
+  "sosa": {
+    "file_path": "sosa.ttl",
+    "fuseki_graph": "http://cml.org/ontology/sosa",
+    "label": "W3C SOSA (observations)"
+  },
+  "ssn": {
+    "file_path": "ssn.ttl",
+    "fuseki_graph": "http://cml.org/ontology/ssn",
+    "label": "W3C SSN (sensors)"
+  },
+  "sweet": {
+    "file_path": "sweet.ttl",
+    "fuseki_graph": "http://cml.org/ontology/sweet",
+    "label": "NASA/ESIP SWEET (merged)"
   }
 }
