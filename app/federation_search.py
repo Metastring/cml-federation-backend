@@ -102,11 +102,11 @@ def local_catalog_datasets() -> list[dict]:
         cur.execute(
             f"""
             SELECT DISTINCT ON (d.dataset_id)
-                   d.dataset_id, d.title, COALESCE(c.category_name, 'Biodiversity') AS category,
+                   d.dataset_id, d.title, c.category_name AS category,
                    d.description, d.keywords, m.geoserver_name
             FROM {MAP_DB_SCHEMA}.dataset_master d
             JOIN {MAP_DB_SCHEMA}.map_layer_info m ON m.dataset_id = d.dataset_id
-            LEFT JOIN {MAP_DB_SCHEMA}.category_master c ON c.category_id = d.category_id
+            JOIN {MAP_DB_SCHEMA}.category_master c ON c.category_id = d.category_id
             WHERE d.is_active IS TRUE AND d.title IS NOT NULL
             ORDER BY d.dataset_id, m.created_at DESC
             """

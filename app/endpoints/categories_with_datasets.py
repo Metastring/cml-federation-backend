@@ -97,7 +97,7 @@ def get_categories_with_datasets():
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         cursor.execute("""
             SELECT
-                COALESCE(cat.category_name, 'Biodiversity') AS category_name,
+                cat.category_name,
                 ds.dataset_id,
                 ds.title AS dataset_title,
                 ds.description,
@@ -114,7 +114,7 @@ def get_categories_with_datasets():
                 dm.data_type
             FROM
                 dataset_master ds
-            LEFT JOIN
+            JOIN
                 category_master cat ON cat.category_id = ds.category_id
             LEFT JOIN
                 dataset_mapping dm ON dm.dataset_id = ds.dataset_id

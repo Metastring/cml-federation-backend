@@ -611,10 +611,10 @@ def _merge_dataset_entries(participant_entry: dict, map_entry: dict) -> dict:
     }
 
 
-# Categories the federated search routes accept. Biodiversity is the original
-# one (external participants + map layers); Climate and Environment were added
-# with the IMD rainfall and CPCB AQI datasets. Matched case-insensitively.
-SEARCHABLE_CATEGORIES = ("Biodiversity", "Climate", "Environment")
+# Categories the federated search routes accept, matching the datasets in
+# "ontology and datasets" (climate, environment, energy, health). Biodiversity
+# was dropped with the legacy biodiversity datasets. Matched case-insensitively.
+SEARCHABLE_CATEGORIES = ("Climate", "Environment", "Energy", "Health")
 
 
 def _require_searchable_category(categories: list[str]) -> None:
