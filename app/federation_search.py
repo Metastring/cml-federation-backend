@@ -78,6 +78,18 @@ def _display_name(peer: dict, remote_rows: list[dict]) -> str:
     return next((r["origin_node_name"] for r in remote_rows if r["origin_base_url"] == peer["base_url"]), peer["name"])
 
 
+def result_fields(results: dict) -> list[str]:
+    """Top-level column list for a search response: union of every dataset's
+    per-dataset "fields", in first-seen order. The frontend builds its table
+    columns from this and reads each row's value by column name."""
+    fields: list[str] = []
+    for pdata in results.values():
+        for name in pdata.get("fields") or []:
+            if name not in fields:
+                fields.append(name)
+    return fields
+
+
 def self_info() -> dict:
     return {
         "node_id": fed.NODE_ID or None,
@@ -517,6 +529,7 @@ async def federate(request: Request, route_path: str, payload, local_handler):
         nodes[_node_key(nodes, name, status.get("base_url", ""))] = status
 
     merged["invalid_datasets"] = [t for t in payload.dataset if _norm(t) not in found_titles]
+    merged["fields"] = result_fields(merged["results"])
     merged["scope"] = "federation"
     merged["nodes"] = nodes
 

@@ -1353,6 +1353,7 @@ async def _federated_search_local(payload: FederatedSearchRequest):
         "valid_datasets": valid_datasets,
         "invalid_datasets": invalid_datasets,
         "search_text": payload.search_text,
+        "fields": federation_search.result_fields(results),
         "results": results
     }
 
@@ -2073,6 +2074,7 @@ async def _federated_search_with_ontology_local(payload: FederatedSearchRequest)
         "valid_datasets": valid_datasets,
         "invalid_datasets": invalid_datasets,
         "search_text": payload.search_text,
+        "fields": federation_search.result_fields(results),
         "results": results,
     }
 
@@ -2281,5 +2283,6 @@ async def _federated_search_with_strict_ontology_check_local(payload: FederatedS
         "invalid_datasets": invalid_datasets,
         "rejected_fields": rejected_fields,
         "search_text": payload.search_text,
+        "fields": federation_search.result_fields(results),
         "results": results,
     }
