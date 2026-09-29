@@ -27,8 +27,7 @@ from rdflib import RDF, RDFS, OWL
 from app.db import get_connection
 from app.ontology_publish import get_registry
 
-REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-INDEX_DIR = REPO_ROOT / "cphr-backend" / "retrieval-index"
+INDEX_DIR = Path(__file__).resolve().parent.parent / "retrieval-index"
 DEFAULT_INDEX_PATH = INDEX_DIR / "index.faiss"
 DEFAULT_META_PATH = INDEX_DIR / "index_meta.json"
 

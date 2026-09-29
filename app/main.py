@@ -32,6 +32,7 @@ from app.endpoints import dataset_registration
 from app.endpoints import ontology_term_proposals
 from app.endpoints import node_federation
 from app.endpoints import federation as federation_endpoints
+from app.endpoints import nl_query as nl_query_endpoints
 from app import federation_search
 from psycopg2.extras import RealDictCursor
 
@@ -69,6 +70,7 @@ app.include_router(dataset_registration.router)
 app.include_router(ontology_term_proposals.router)
 app.include_router(node_federation.router)
 app.include_router(federation_endpoints.router)
+app.include_router(nl_query_endpoints.router)
 
 # Participant API endpoints
 CPMP_BOTANICAL_SEARCH_URL = "https://cpmp.tdu.edu.in/api/species/search/v2"
