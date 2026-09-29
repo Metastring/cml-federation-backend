@@ -1,8 +1,82 @@
 from fastapi import APIRouter
 from app.db import get_connection
 from psycopg2.extras import RealDictCursor
+import psycopg2
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# primary first, then how close the ontology term is to ours
+_MATCH_ORDER = {"exact": 0, "close": 1, "broader": 2, "narrower": 3, "related": 4}
+
+
+def _load_term_crosswalk(cursor):
+    """Index cml_term / cml_term_ontology_match for field -> term lookup.
+
+    Returns (by_key, by_uri, by_synonym, refs) where refs maps term_key to its
+    ontology references. Empty if the crosswalk migration isn't applied yet
+    (e.g. a node DB lagging central), so the endpoint still works.
+    """
+    try:
+        cursor.execute("SAVEPOINT term_crosswalk")
+        cursor.execute("""
+            SELECT t.term_key, t.synonyms,
+                   m.ontology_graph_key, m.term_uri, m.term_label,
+                   m.match_type, m.is_primary
+            FROM cml_term t
+            LEFT JOIN cml_term_ontology_match m ON m.term_key = t.term_key
+            ORDER BY t.term_key;
+        """)
+        rows = cursor.fetchall()
+        cursor.execute("RELEASE SAVEPOINT term_crosswalk")
+    except psycopg2.errors.UndefinedTable:
+        cursor.execute("ROLLBACK TO SAVEPOINT term_crosswalk")
+        logger.warning("cml_term crosswalk tables missing; indicator references disabled")
+        return {}, {}, {}, {}
+
+    by_key, by_uri, by_synonym, refs = {}, {}, {}, {}
+    for row in rows:
+        key = row["term_key"]
+        if key not in refs:
+            refs[key] = []
+            by_key[key.lower()] = key
+            for syn in row["synonyms"] or []:
+                by_synonym.setdefault(syn.lower(), []).append(key)
+        if row["term_uri"]:
+            by_uri.setdefault(row["term_uri"], []).append(key)
+            refs[key].append({
+                "ontology": row["ontology_graph_key"],
+                "uri": row["term_uri"],
+                "label": row["term_label"],
+                "match_type": row["match_type"],
+                "is_primary": row["is_primary"],
+            })
+    for key in refs:
+        refs[key].sort(key=lambda r: (not r["is_primary"], _MATCH_ORDER.get(r["match_type"], 9)))
+    for index in (by_uri, by_synonym):
+        for k, keys in index.items():
+            index[k] = list(dict.fromkeys(keys))
+    return by_key, by_uri, by_synonym, refs
+
+
+def _resolve_term(field_name, ontology_mapping, crosswalk):
+    """Pick the cml_term for a dataset field, or None."""
+    by_key, by_uri, by_synonym, _ = crosswalk
+    mapping = (ontology_mapping or "").strip()
+    name = (field_name or "").strip().lower()
+
+    if mapping.lower() in by_key:
+        return by_key[mapping.lower()]
+    candidates = by_uri.get(mapping) or by_synonym.get(mapping.lower()) or by_synonym.get(name) or []
+    if len(candidates) > 1:
+        # one URI can back several terms (e.g. OEO energy-met vs peak-demand);
+        # prefer the one whose synonyms name this column
+        by_name = [k for k in candidates if k in by_synonym.get(name, [])]
+        if by_name:
+            return by_name[0]
+    return candidates[0] if candidates else None
 
 
 @router.get("/categories", tags=["Registration APIs"])
@@ -126,8 +200,10 @@ def get_categories_with_datasets():
         """)
         
         rows = cursor.fetchall()
+        crosswalk = _load_term_crosswalk(cursor)
+        term_refs = crosswalk[3]
         category_map = {}
-        
+
         for row in rows:
             category = row["category_name"]
             dataset_title = row["dataset_title"]  # May be None
@@ -150,10 +226,13 @@ def get_categories_with_datasets():
                 "ontology_mapping_to_display": row["ontology_mapping_to_display"],
                 "data_type": row["data_type"]
             }
-            
+            term_key = _resolve_term(row["field_name"], row["ontology_mapping"], crosswalk)
+            field_info["cml_term"] = term_key
+            field_info["references"] = term_refs.get(term_key, []) if term_key else []
+
             if category not in category_map:
                 category_map[category] = {}
-                
+
             if dataset_title:
                 if dataset_title not in category_map[category]:
                     category_map[category][dataset_title] = {
