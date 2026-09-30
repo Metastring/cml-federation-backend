@@ -9,10 +9,12 @@ from pydantic import BaseModel
 
 from app import node_federation_service as svc
 
-# Federation Phase 1 endpoints (FEDERATION_ARCHITECTURE.md §4/§6). No prefix
-# -- the doc specifies flat paths (/node/manifest, /nodes, /nodes/{id}/...)
-# shared verbatim across every node. Every server answers them, but only the
-# registry (svc.REGISTRY_URL) keeps the member list; the others forward.
+# Federation endpoints (FEDERATION_ARCHITECTURE.md §4/§6/§14). No prefix --
+# flat paths (/node/..., /nodes/...) shared verbatim by every node. Every
+# node answers them, but only the registry host (svc.REGISTRY_URL) keeps the
+# member list; the others forward. /node/self/* act for the node you call,
+# using the key it keeps itself -- the Node Registry page uses only those
+# plus the directory, so it is the same page on every node.
 router = APIRouter(tags=["Federation APIs"])
 
 
@@ -42,6 +44,12 @@ class RegisterNodeInput(BaseModel):
 class HeartbeatInput(BaseModel):
     dataset_count: int | None = None
     version: str | None = None
+    name: str | None = None
+
+
+class RegisterSelfInput(BaseModel):
+    name: str | None = None
+    maintained_by: str | None = None
 
 
 class DetachInput(BaseModel):
@@ -58,6 +66,12 @@ def _bearer_token(authorization: str | None) -> str:
 
 
 def _raise_for(exc: Exception):
+    if isinstance(exc, svc.RegistryError):
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    if isinstance(exc, svc.NotRegisteredError):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if isinstance(exc, httpx.HTTPError):
+        raise HTTPException(status_code=502, detail=f"Registry {svc.REGISTRY_URL} unreachable: {exc}") from exc
     if isinstance(exc, svc.NodeNotFoundError):
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if isinstance(exc, svc.NodeAuthError):
@@ -69,14 +83,52 @@ def _raise_for(exc: Exception):
 
 @router.get("/node/manifest", summary="This node's self-description")
 def node_manifest():
-    """Present on every node (central and client alike). Registration and
-    discovery both start by fetching this document (§4.1)."""
+    """Present on every node. Registration and discovery both start by
+    fetching this document (§4.1). Also says whether this node is registered
+    (`registered`, `member_id`) and how its heartbeat is doing."""
     return svc.get_manifest()
 
 
-@router.post("/nodes/register", summary="A client node registers itself with central")
+@router.post("/node/self/register", summary="Register this node with the registry")
+async def register_self(payload: RegisterSelfInput):
+    """Registers (or re-registers) the node you call under its own manifest
+    URL and keeps the issued key server-side, then heartbeats once. The
+    response has no api_key -- the node holds it."""
+    try:
+        return await svc.register_self(payload.name, payload.maintained_by)
+    except Exception as exc:
+        _raise_for(exc)
+
+
+@router.post("/node/self/heartbeat", summary="Send this node's heartbeat now")
+async def heartbeat_self():
+    try:
+        return await svc.heartbeat_now()
+    except Exception as exc:
+        _raise_for(exc)
+
+
+@router.post("/node/self/detach", summary="Detach this node, or revoke & forget its key")
+async def detach_own(payload: DetachInput):
+    """revoke_key=false: marked detached, key kept (a heartbeat rejoins).
+    revoke_key=true: the registry drops the key and this node forgets it."""
+    try:
+        return await svc.detach_own(payload.revoke_key)
+    except Exception as exc:
+        _raise_for(exc)
+
+
+@router.get("/nodes/{node_id}/manifest", summary="A registered node's live manifest (details view)")
+async def node_details(node_id: str):
+    try:
+        return await svc.peer_manifest(node_id)
+    except Exception as exc:
+        _raise_for(exc)
+
+
+@router.post("/nodes/register", summary="Register a node by its manifest URL")
 async def register_node(payload: RegisterNodeInput):
-    """Central fetches the caller's manifest URL itself before trusting
+    """The registry fetches the caller's manifest URL itself before trusting
     anything it claims (§4.2). Returns an API key -- shown once, stored only
     as a hash -- required on every later heartbeat/detach call."""
     if not svc.is_registry():
@@ -100,7 +152,9 @@ async def node_heartbeat(
                               authorization=authorization)
     try:
         api_key = _bearer_token(authorization)
-        return await asyncio.to_thread(svc.record_heartbeat, node_id, api_key, payload.dataset_count, payload.version)
+        return await asyncio.to_thread(
+            svc.record_heartbeat, node_id, api_key, payload.dataset_count, payload.version, payload.name
+        )
     except Exception as exc:
         _raise_for(exc)
 
@@ -128,7 +182,7 @@ async def detach_self(payload: DetachInput, authorization: str | None = Header(d
         _raise_for(exc)
 
 
-@router.post("/nodes/{node_id}/revoke", summary="Admin revokes a node")
+@router.post("/nodes/{node_id}/revoke", summary="Revoke any registered node")
 async def revoke_node(node_id: str):
     """Admin action for a decommissioned or misbehaving node (§6) --
     doesn't require the node's own key, unlike detach_self."""

@@ -92,7 +92,7 @@ def self_info() -> dict:
     return {
         "node_id": fed.NODE_ID or None,
         "name": fed.NODE_NAME,
-        "role": fed.NODE_ROLE,
+        "role": "registry host" if fed.is_registry() else "member",
         "base_url": fed.NODE_BASE_URL,
     }
 
