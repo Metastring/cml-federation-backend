@@ -34,6 +34,7 @@ from app.endpoints import node_federation
 from app.endpoints import federation as federation_endpoints
 from app.endpoints import nl_query as nl_query_endpoints
 from app import federation_search
+from app import node_federation_service
 from psycopg2.extras import RealDictCursor
 
 
@@ -44,6 +45,8 @@ app = FastAPI()
 @app.on_event("startup")
 async def startup_event():
     _load_dataset_ontology_maps()
+    # Keep a reference so the task isn't garbage-collected mid-sleep.
+    app.state.heartbeat_task = asyncio.create_task(node_federation_service.heartbeat_loop())
 
 
 app.add_middleware(

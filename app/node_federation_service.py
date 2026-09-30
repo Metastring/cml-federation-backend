@@ -1,17 +1,21 @@
 """Federation Phase 1 -- node manifest, registration, heartbeat, directory
 listing, and detach/revoke. See ../FEDERATION_ARCHITECTURE.md for the full
-design this implements (§3 core model, §4 central node registry, §6 detach
-vs. deregister).
+design this implements (§3 core model, §4 node registry, §6 detach vs.
+deregister, §14 peer model).
 
-Every node (central or client) runs this same module -- the distinction is
-purely which env vars a given deployment's .env sets (NODE_ROLE=central vs.
-client). /node/manifest works identically everywhere; /nodes/register,
-/nodes/{id}/heartbeat, /nodes and /nodes/self/detach are only meaningfully
-used against whichever instance a deployment has designated central.
+Every server runs this same module and is an equal peer: each one is a row
+in ONE registry (node_registry in the DB of the server at REGISTRY_URL,
+today the one historically called "central") and heartbeats to it, the
+registry host included. Registry calls (/nodes, register, heartbeat, detach,
+revoke) made to any other server are forwarded to the registry, so a
+registration made anywhere shows up everywhere. Each server's data stays in
+its own database; only the membership list lives in one place.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import logging
 import os
 import secrets
 from datetime import datetime, timezone
@@ -21,6 +25,8 @@ from psycopg2.extras import Json, RealDictCursor
 
 from app.db import get_connection
 
+logger = logging.getLogger(__name__)
+
 NODE_ROLE = os.getenv("NODE_ROLE", "central")
 NODE_ID = os.getenv("NODE_ID", "")
 NODE_NAME = os.getenv("NODE_NAME", "CML Central")
@@ -29,6 +35,19 @@ CENTRAL_SERVER_URL = os.getenv("CENTRAL_SERVER_URL", "")
 FUSEKI_SPARQL_ENDPOINT = os.getenv("FUSEKI_SPARQL_ENDPOINT", "")
 GEOSERVER_URL = os.getenv("GEOSERVER_URL", "")
 CML_VERSION = os.getenv("CML_VERSION", "0.1.0")
+
+# The one server whose node_registry is the membership list. REGISTRY_URL is
+# the new name; CENTRAL_SERVER_URL is still honoured. A NODE_ROLE=central
+# server with neither set is its own registry.
+REGISTRY_URL = (
+    os.getenv("REGISTRY_URL") or CENTRAL_SERVER_URL or (NODE_BASE_URL if NODE_ROLE == "central" else "")
+).rstrip("/")
+# This server's own registry row and key (returned by POST /nodes/register).
+MEMBER_ID = os.getenv("CENTRAL_NODE_ID", "")
+MEMBER_API_KEY = os.getenv("NODE_API_KEY", "")
+# 0 disables the in-process heartbeat (e.g. when an external timer sends it).
+HEARTBEAT_INTERVAL_SECONDS = int(os.getenv("HEARTBEAT_INTERVAL_SECONDS", "300"))
+REGISTRY_TIMEOUT = float(os.getenv("FEDERATION_CATALOG_TIMEOUT_SECONDS", "5"))
 
 # Beyond this many minutes without a heartbeat, an 'active' node is
 # considered 'stale' and dropped from search fan-out (§4.3) even without an
@@ -47,6 +66,11 @@ class NodeAuthError(Exception):
 
 class InvalidManifestError(Exception):
     pass
+
+
+def is_registry() -> bool:
+    """True when this server holds the membership list itself."""
+    return bool(REGISTRY_URL) and REGISTRY_URL == NODE_BASE_URL.rstrip("/")
 
 
 def _hash_key(api_key: str) -> str:
@@ -99,6 +123,10 @@ def get_manifest() -> dict:
         "sparql_endpoint": FUSEKI_SPARQL_ENDPOINT or None,
         "geoserver_url": GEOSERVER_URL or None,
         "central_server_url": CENTRAL_SERVER_URL or None,
+        "registry_url": REGISTRY_URL or None,
+        "is_registry": is_registry(),
+        "member_id": MEMBER_ID or None,
+        "heartbeat": dict(_heartbeat_state),
         "version": CML_VERSION,
         "dataset_count": dataset_count,
         "ontology_count": ontology_count,
@@ -333,3 +361,87 @@ def revoke_node(node_id: str) -> dict:
         conn.close()
 
     return {"node_id": node_id, "status": "revoked"}
+
+
+# ---------------------------------------------------------------------------
+# Directory: the registry's member list, as seen from any server
+# ---------------------------------------------------------------------------
+
+# Last list fetched from the registry, served while the registry is down.
+_directory_cache: dict[bool, list[dict]] = {}
+
+
+async def directory(include_inactive: bool = False, client: httpx.AsyncClient | None = None) -> tuple[list[dict], str]:
+    """(members, source). source is "local" on the registry itself,
+    "registry" when fetched from it, "cache" when the registry is unreachable
+    and the last good copy is used, "unavailable" when there is none, and
+    "standalone" when no registry is configured."""
+    if is_registry():
+        return await asyncio.to_thread(list_nodes, include_inactive), "local"
+    if not REGISTRY_URL:
+        return [], "standalone"
+    try:
+        if client is None:
+            async with httpx.AsyncClient() as own:
+                resp = await own.get(f"{REGISTRY_URL}/nodes", params={"include_inactive": include_inactive},
+                                     timeout=REGISTRY_TIMEOUT)
+        else:
+            resp = await client.get(f"{REGISTRY_URL}/nodes", params={"include_inactive": include_inactive},
+                                    timeout=REGISTRY_TIMEOUT)
+        resp.raise_for_status()
+        nodes = resp.json().get("nodes", [])
+        _directory_cache[include_inactive] = nodes
+        return nodes, "registry"
+    except Exception as exc:
+        logger.warning("Registry %s unreachable for /nodes: %s", REGISTRY_URL, exc)
+        if include_inactive in _directory_cache:
+            return _directory_cache[include_inactive], "cache"
+        return [], "unavailable"
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat: every member (the registry host too) checks in on a timer
+# ---------------------------------------------------------------------------
+
+_heartbeat_state: dict = {
+    "enabled": False, "interval_s": HEARTBEAT_INTERVAL_SECONDS,
+    "last_ok_at": None, "last_error_at": None, "last_error": None,
+}
+
+
+async def send_heartbeat() -> dict:
+    """One heartbeat for this server. Raises on failure."""
+    dataset_count = (await asyncio.to_thread(get_manifest))["dataset_count"]
+    if is_registry():
+        return await asyncio.to_thread(record_heartbeat, MEMBER_ID, MEMBER_API_KEY, dataset_count, CML_VERSION)
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{REGISTRY_URL}/nodes/{MEMBER_ID}/heartbeat",
+            json={"dataset_count": dataset_count, "version": CML_VERSION},
+            headers={"Authorization": f"Bearer {MEMBER_API_KEY}"},
+            timeout=REGISTRY_TIMEOUT,
+        )
+    if resp.status_code != 200:
+        raise NodeAuthError(f"HTTP {resp.status_code}: {resp.text[:300]}")
+    return resp.json()
+
+
+async def heartbeat_loop() -> None:
+    """Started from app startup. Replaces the external cron/systemd timer,
+    which could fail silently (a rotated key went unnoticed for two days).
+    A 401 means this server's NODE_API_KEY no longer matches the registry --
+    re-register and update .env."""
+    if not (REGISTRY_URL and MEMBER_ID and MEMBER_API_KEY and HEARTBEAT_INTERVAL_SECONDS > 0):
+        logger.info("Heartbeat disabled: needs REGISTRY_URL/CENTRAL_SERVER_URL, CENTRAL_NODE_ID and NODE_API_KEY")
+        return
+    _heartbeat_state["enabled"] = True
+    await asyncio.sleep(5)
+    while True:
+        try:
+            await send_heartbeat()
+            _heartbeat_state["last_ok_at"] = datetime.now(timezone.utc).isoformat()
+        except Exception as exc:
+            _heartbeat_state["last_error_at"] = datetime.now(timezone.utc).isoformat()
+            _heartbeat_state["last_error"] = f"{type(exc).__name__}: {exc}"[:300]
+            logger.error("Heartbeat to registry %s failed: %s", REGISTRY_URL, exc)
+        await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)

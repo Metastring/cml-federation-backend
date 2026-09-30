@@ -1,8 +1,11 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File, Query
+import asyncio
+
+from fastapi import APIRouter, HTTPException, UploadFile, File, Query, Request
 from pydantic import BaseModel, ValidationError
 from typing import Optional, List
 from datetime import date
 from app.db import get_connection
+from app import federation_search
 from psycopg2.extras import RealDictCursor
 import csv
 import io
@@ -114,7 +117,23 @@ router = APIRouter()
 
 
 @router.get("/metadata")
-def get_metadata(title: str, category_name: str):
+async def get_metadata(request: Request, title: str, category_name: str):
+    """Full metadata for one dataset. A dataset held by another server (as
+    listed by /categories-with-datasets) is fetched from that server and
+    tagged with `origin_node`."""
+    try:
+        details = await asyncio.to_thread(_local_metadata, title, category_name)
+        return {**details, "origin_node": federation_search.self_info()}
+    except HTTPException as exc:
+        if exc.status_code != 404 or request.headers.get(federation_search.HOP_HEADER):
+            raise
+    remote = await federation_search.remote_metadata(title, category_name)
+    if remote is None:
+        raise HTTPException(status_code=404, detail="Metadata not found for the specified dataset and category")
+    return remote
+
+
+def _local_metadata(title: str, category_name: str):
     # Normalize title
     normalized_title = title
     

@@ -16,12 +16,14 @@ Two pieces, both running identically on central and client nodes:
    again. Results are merged, tagged with origin_node, and a per-node status
    block reports ok / timeout / error / skipped.
 
-Peers: central fans out to 'active' nodes in node_registry. A client node
-asks central's GET /nodes for the other nodes (falling back to the peers it
-has cached catalogs for when central is down) and treats central itself as
-a peer. A node with no CENTRAL_SERVER_URL is standalone and searches only
-itself. Node-to-node calls are unauthenticated for now (search is a public
-read); they identify themselves with X-CML-Node-Id.
+Peers: every server is an equal member of one registry (see
+node_federation_service). Each gets the member list the same way -- from its
+own table on the registry host, from GET {REGISTRY_URL}/nodes elsewhere, or
+the last cached copy while the registry is down -- and fans out to every
+'active' member except itself. A server with no registry configured is
+standalone and searches only itself. Node-to-node calls are unauthenticated
+for now (search is a public read); they identify themselves with
+X-CML-Node-Id.
 """
 from __future__ import annotations
 
@@ -47,10 +49,6 @@ CATALOG_TIMEOUT = float(os.getenv("FEDERATION_CATALOG_TIMEOUT_SECONDS", "5"))
 CATALOG_TTL = int(os.getenv("FEDERATION_CATALOG_TTL_SECONDS", "600"))
 MAP_DB_SCHEMA = os.getenv("MAP_DB_SCHEMA", "public")
 
-# Last peer list a client node got from central, reused while central is down.
-_last_known_peers: list[dict] = []
-
-
 def _norm(title: str) -> str:
     return " ".join((title or "").lower().split())
 
@@ -67,13 +65,13 @@ def _node_key(nodes: dict, name: str, base_url: str) -> str:
     return name if name not in nodes else f"{name} ({base_url})"
 
 
-_CENTRAL_PLACEHOLDER = "central"
+_REGISTRY_PLACEHOLDER = "registry"
 
 
 def _display_name(peer: dict, remote_rows: list[dict]) -> str:
-    """Registry name for a peer; for the "central" placeholder a client node
-    uses (central isn't in node_registry), the name central's catalog gave."""
-    if peer["name"] != _CENTRAL_PLACEHOLDER:
+    """Registry name for a peer; for the placeholder used when the registry
+    host hasn't registered itself as a member, the name its catalog gave."""
+    if peer["name"] != _REGISTRY_PLACEHOLDER:
         return peer["name"]
     return next((r["origin_node_name"] for r in remote_rows if r["origin_base_url"] == peer["base_url"]), peer["name"])
 
@@ -222,47 +220,48 @@ def _cached_origins() -> list[dict]:
         conn.close()
 
 
+def _is_self(member: dict) -> bool:
+    return (member["base_url"].rstrip("/") == fed.NODE_BASE_URL.rstrip("/")
+            or (bool(fed.MEMBER_ID) and str(member.get("node_id")) == fed.MEMBER_ID))
+
+
 async def list_peers(client: httpx.AsyncClient) -> tuple[list[dict], dict]:
-    """(peers to search, {name: status} for nodes deliberately not searched)."""
-    global _last_known_peers
+    """(peers to search, {name: status} for members deliberately not searched)."""
     own_url = fed.NODE_BASE_URL.rstrip("/")
-    skipped: dict[str, dict] = {}
+    members, source = await fed.directory(True, client)
+    if source == "standalone":
+        return [], {}
+    if source == "unavailable":
+        # Registry down and never reached since startup: the peers whose
+        # catalogs were harvested earlier are the best guess.
+        return [o for o in await asyncio.to_thread(_cached_origins) if o["base_url"] != own_url], {}
 
-    if fed.NODE_ROLE == "central":
-        nodes = await asyncio.to_thread(fed.list_nodes, True)
-        peers = []
-        for n in nodes:
-            if n["base_url"].rstrip("/") == own_url:
-                continue
-            if n["status"] == "active":
-                peers.append({"node_id": n["node_id"], "name": n["name"], "base_url": n["base_url"].rstrip("/")})
-            elif n["status"] != "revoked":
-                skipped[n["name"]] = {"status": f"skipped_{n['status']}", "base_url": n["base_url"]}
-        return peers, skipped
+    peers, skipped = [], {}
+    for n in members:
+        if _is_self(n):
+            continue
+        # The registry just answered us, so it's up even if its own
+        # heartbeat row has lapsed.
+        live_registry = source == "registry" and n["base_url"].rstrip("/") == fed.REGISTRY_URL
+        if n["status"] == "active" or (live_registry and n["status"] == "stale"):
+            peers.append({"node_id": n["node_id"], "name": n["name"], "base_url": n["base_url"].rstrip("/")})
+        elif n["status"] != "revoked":
+            skipped[n["name"]] = {"status": f"skipped_{n['status']}", "base_url": n["base_url"]}
 
-    central_url = (fed.CENTRAL_SERVER_URL or "").rstrip("/")
-    if not central_url:
-        return [], {}  # standalone / detached: search only this node
+    # Until the registry host registers itself as a member, still search it.
+    known = {p["base_url"] for p in peers} | {s["base_url"].rstrip("/") for s in skipped.values()}
+    if fed.REGISTRY_URL and fed.REGISTRY_URL != own_url and fed.REGISTRY_URL not in known:
+        peers.insert(0, {"node_id": None, "name": _REGISTRY_PLACEHOLDER, "base_url": fed.REGISTRY_URL})
+    return peers, skipped
 
-    own_registry_id = os.getenv("CENTRAL_NODE_ID", "")
-    central_peer = {"node_id": None, "name": _CENTRAL_PLACEHOLDER, "base_url": central_url}
-    try:
-        resp = await client.get(f"{central_url}/nodes", timeout=CATALOG_TIMEOUT)
-        resp.raise_for_status()
-        others = []
-        for n in resp.json().get("nodes", []):
-            if n["base_url"].rstrip("/") in (own_url, central_url) or n["node_id"] == own_registry_id:
-                continue
-            if n["status"] == "active":
-                others.append({"node_id": n["node_id"], "name": n["name"], "base_url": n["base_url"].rstrip("/")})
-            elif n["status"] != "revoked":
-                skipped[n["name"]] = {"status": f"skipped_{n['status']}", "base_url": n["base_url"]}
-        _last_known_peers = others
-    except Exception:
-        others = _last_known_peers or [
-            o for o in await asyncio.to_thread(_cached_origins) if o["base_url"] not in (own_url, central_url)
-        ]
-    return [central_peer] + others, skipped
+
+async def find_member(node_id: str) -> dict:
+    """One registry row by id, from the same directory every server sees."""
+    members, _ = await fed.directory(True)
+    for n in members:
+        if str(n["node_id"]) == node_id:
+            return n
+    raise fed.NodeNotFoundError(f"Node {node_id} not found")
 
 
 # ---------------------------------------------------------------------------
@@ -391,10 +390,10 @@ async def node_datasets(node_id: str) -> dict:
         node = {"node_id": me["node_id"], "name": me["name"], "base_url": me["base_url"],
                 "status": "self", "is_self": True}
     else:
-        row = await asyncio.to_thread(fed.get_node, node_id)
+        row = await find_member(node_id)
         base_url = row["base_url"].rstrip("/")
         node = {"node_id": row["node_id"], "name": row["name"], "base_url": row["base_url"],
-                "status": row["status"], "is_self": base_url == own_url}
+                "status": row["status"], "is_self": _is_self(row)}
 
     if node["is_self"]:
         local = await asyncio.to_thread(local_catalog_datasets)
@@ -418,14 +417,62 @@ async def node_datasets(node_id: str) -> dict:
         return payload(node, "cache", harvested_at, [_cached_row_to_dataset(r) for r in rows])
 
 
-async def federation_catalog(category: str | None, term: str | None, q: str | None, force: bool) -> dict:
-    """GET /federation/catalog: this node's datasets + every reachable peer's,
-    each tagged with origin_node. `term` matches a field's ontology term IRI
-    (the "similar datasets" lookup)."""
+async def remote_catalogs(force: bool = False) -> tuple[list[dict], dict, dict, list[dict]]:
+    """(peers, skipped, catalog statuses, cached dataset rows) for every
+    reachable peer, refreshing stale catalogs first."""
     async with httpx.AsyncClient() as client:
         peers, skipped = await list_peers(client)
         statuses = await refresh_catalogs(client, peers, force=force)
     rows = await asyncio.to_thread(_cached_datasets, [p["base_url"] for p in peers])
+    return peers, skipped, statuses, rows
+
+
+def split_node_suffix(title: str, node_names: set[str]) -> tuple[str, str | None]:
+    """"<title> @ <node name>" -> (title, node name). Listings and search
+    results use that form when two servers hold datasets with the same
+    title; anything else is returned unchanged with node None."""
+    if " @ " in title:
+        base, node = title.rsplit(" @ ", 1)
+        if node in node_names:
+            return base, node
+    return title, None
+
+
+async def remote_metadata(title: str, category_name: str) -> dict | None:
+    """GET /metadata for a dataset another server holds: found through the
+    harvested catalogs and fetched from its owner. None if no peer has it."""
+    _, _, _, rows = await remote_catalogs()
+    node_names = {r["origin_node_name"] for r in rows if r["origin_node_name"]}
+    base_title, node = split_node_suffix(title, node_names)
+    candidates = [
+        r for r in rows
+        if _norm(r["title"]) == _norm(base_title)
+        and (r["category"] or "").lower() == category_name.lower()
+        and (node is None or r["origin_node_name"] == node)
+    ]
+    me = self_info()
+    async with httpx.AsyncClient() as client:
+        for r in candidates:
+            try:
+                resp = await client.get(
+                    f"{r['origin_base_url']}/metadata",
+                    params={"title": r["title"], "category_name": r["category"]},
+                    headers={HOP_HEADER: "1", NODE_ID_HEADER: me["node_id"] or me["name"]},
+                    timeout=SEARCH_TIMEOUT,
+                )
+            except httpx.HTTPError:
+                continue
+            if resp.status_code == 200:
+                origin = {"node_id": r["origin_node_id"], "name": r["origin_node_name"], "base_url": r["origin_base_url"]}
+                return {**resp.json(), "dataset_title": title, "origin_node": origin}
+    return None
+
+
+async def federation_catalog(category: str | None, term: str | None, q: str | None, force: bool) -> dict:
+    """GET /federation/catalog: this node's datasets + every reachable peer's,
+    each tagged with origin_node. `term` matches a field's ontology term IRI
+    (the "similar datasets" lookup)."""
+    peers, skipped, statuses, rows = await remote_catalogs(force=force)
     local = await asyncio.to_thread(local_catalog_datasets)
 
     me = self_info()
@@ -495,12 +542,20 @@ async def federate(request: Request, route_path: str, payload, local_handler):
         for r in remote_rows:
             remote_by_title.setdefault(_norm(r["title"]), []).append(r)
 
+        node_names = {me["name"]} | {r["origin_node_name"] for r in remote_rows if r["origin_node_name"]}
         if payload.dataset:
-            local_titles = [
-                t for t in payload.dataset
-                if _norm(t) in local_titles_known or _norm(t) not in remote_by_title
-            ]
-            remote_pairs = [(r, t) for t in payload.dataset for r in remote_by_title.get(_norm(t), [])]
+            local_titles, remote_pairs = [], []
+            for t in payload.dataset:
+                title, node = split_node_suffix(t, node_names)
+                if node == me["name"]:
+                    local_titles.append(title)
+                elif node:
+                    remote_pairs += [(r, title) for r in remote_by_title.get(_norm(title), [])
+                                     if r["origin_node_name"] == node]
+                else:
+                    if _norm(t) in local_titles_known or _norm(t) not in remote_by_title:
+                        local_titles.append(t)
+                    remote_pairs += [(r, t) for r in remote_by_title.get(_norm(t), [])]
         else:
             # No datasets named: search everything in the requested categories.
             local_titles = [d["title"] for d in local_datasets if (d["category"] or "").lower() in requested_categories]
@@ -582,7 +637,9 @@ async def federate(request: Request, route_path: str, payload, local_handler):
     for name, status in skipped.items():
         nodes[_node_key(nodes, name, status.get("base_url", ""))] = status
 
-    merged["invalid_datasets"] = [t for t in payload.dataset if _norm(t) not in found_titles]
+    merged["invalid_datasets"] = [
+        t for t in payload.dataset if _norm(split_node_suffix(t, node_names)[0]) not in found_titles
+    ]
     merged["fields"] = result_fields(merged["results"])
     merged["scope"] = "federation"
     merged["nodes"] = nodes

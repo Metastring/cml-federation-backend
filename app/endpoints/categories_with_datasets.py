@@ -1,5 +1,9 @@
-from fastapi import APIRouter
+import asyncio
+from typing import Literal
+
+from fastapi import APIRouter, Query, Request
 from app.db import get_connection
+from app import federation_search
 from psycopg2.extras import RealDictCursor
 import psycopg2
 import logging
@@ -165,7 +169,71 @@ def get_categories():
 #     finally:
 #         conn.close()
 @router.get("/categories-with-datasets")
-def get_categories_with_datasets():
+async def get_categories_with_datasets(
+    request: Request,
+    scope: Literal["local", "federation"] = Query(
+        default="federation",
+        description="'federation' = this server's datasets plus every reachable peer's (default); 'local' = this server only",
+    ),
+):
+    """Datasets grouped by category. With scope="federation" every peer's
+    searchable datasets are listed too, tagged with `origin_node`; a title
+    that clashes with one already listed in its category becomes
+    "<title> @ <node name>", which /federated-search* and /metadata accept."""
+    local = await asyncio.to_thread(_local_categories_with_datasets)
+    me = federation_search.self_info()
+    for group in local:
+        for d in group["datasets"]:
+            d["origin_node"] = me
+    if scope == "local" or request.headers.get(federation_search.HOP_HEADER):
+        return local
+
+    _, _, _, rows = await federation_search.remote_catalogs()
+    crosswalk = await asyncio.to_thread(_term_crosswalk)
+    groups = {g["category_name"]: g for g in local}
+    for r in rows:
+        category = r["category"] or "Uncategorised"
+        group = groups.get(category)
+        if group is None:
+            group = groups[category] = {"category_name": category, "datasets": []}
+            local.append(group)
+        origin = {"node_id": r["origin_node_id"], "name": r["origin_node_name"], "base_url": r["origin_base_url"]}
+        title = r["title"]
+        if any(d["dataset_title"] == title for d in group["datasets"]):
+            title = f"{title} @ {origin['name']}"
+        fields = []
+        for f in r["fields"] or []:
+            term_key = _resolve_term(f.get("field_name"), f.get("ontology_mapping"), crosswalk)
+            fields.append({
+                "field_name": f.get("field_name"),
+                "ontology_mapping": f.get("ontology_mapping"),
+                "ontology_mapping_to_display": f.get("ontology_mapping_to_display"),
+                "data_type": f.get("data_type"),
+                "cml_term": term_key,
+                "references": crosswalk[3].get(term_key, []) if term_key else [],
+            })
+        group["datasets"].append({
+            "dataset_title": title,
+            "description": r["description"],
+            "metadata": {
+                "keywords": r["keywords"], "DOI": None, "contacts": None, "License": None,
+                "Publication Date": None, "Last Updated": None, "Registration Date": None,
+            },
+            "fields": fields,
+            "origin_node": origin,
+        })
+    return local
+
+
+def _term_crosswalk():
+    conn = get_connection()
+    try:
+        return _load_term_crosswalk(conn.cursor(cursor_factory=RealDictCursor))
+    finally:
+        conn.close()
+
+
+def _local_categories_with_datasets():
     conn = get_connection()
     try:
         cursor = conn.cursor(cursor_factory=RealDictCursor)
