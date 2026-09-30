@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import Json, RealDictCursor
 
 from app import custom_ontology_service as custom_svc
 from app import ontology_publish
@@ -36,6 +36,10 @@ class FieldNotFoundError(Exception):
 
 
 class MappingNotFoundError(Exception):
+    pass
+
+
+class InvalidMappingError(Exception):
     pass
 
 
@@ -80,6 +84,7 @@ def _predefined_fields(graph_key: str) -> list[dict]:
                 "class_name": prop["domains"][0] if prop["domains"] else None,
                 "property_type": prop["property_type"],
                 "range": prop["ranges"][0] if prop["ranges"] else None,
+                "uri": prop["iri"],
             }
         )
     return fields
@@ -93,6 +98,8 @@ def _custom_fields(graph_key: str) -> list[dict]:
             "class_name": p["domain_class_name"],
             "property_type": p["property_type"],
             "range": p["range_value"],
+            # same namespace custom_ontology_service's TTL export publishes under
+            "uri": f"http://cml.org/ontology/{graph_key}#{p['name']}",
         }
         for p in custom_svc.list_all_properties(graph_key)
     ]
@@ -117,10 +124,16 @@ def _dataset_exists(cur, dataset_id: int) -> bool:
 
 
 def save_mappings(dataset_id: int, ontology_graph_key: str, mappings: list[dict]) -> dict:
-    """mappings: [{field_name, ontology_field}, ...]. Each ontology_field is
-    validated against the chosen ontology's real field list before insert --
-    the fix for the old endpoint's self-referential (and often silently
-    no-op) lookup."""
+    """mappings: [{field_name, ontology_field, sample_value, value_range,
+    ontology_uri, metadata, label, data_type}, ...]. Each ontology_field is validated
+    against the chosen ontology's real field list before insert -- the fix
+    for the old endpoint's self-referential (and often silently no-op)
+    lookup.
+
+    A field the contributor couldn't find in the ontology comes with no
+    ontology_field and only an ontology_uri: it's stored as-is under its
+    own field name, with no ontology_graph_key since it isn't a term of the
+    chosen ontology."""
     field_index = {f["value"]: f for f in get_ontology_fields(ontology_graph_key)["items"]}
 
     with _cursor() as cur:
@@ -130,22 +143,36 @@ def save_mappings(dataset_id: int, ontology_graph_key: str, mappings: list[dict]
         inserted = []
         for mapping in mappings:
             field_name = mapping["field_name"]
-            ontology_field = mapping["ontology_field"]
-            field_info = field_index.get(ontology_field)
-            if not field_info:
-                raise FieldNotFoundError(
-                    f"{ontology_field!r} is not a field of ontology {ontology_graph_key!r}"
-                )
+            ontology_field = mapping.get("ontology_field")
+            ontology_uri = mapping.get("ontology_uri")
 
-            data_type = field_info["range"] if field_info["property_type"] == "datatype" else "object"
+            if ontology_field:
+                field_info = field_index.get(ontology_field)
+                if not field_info:
+                    raise FieldNotFoundError(
+                        f"{ontology_field!r} is not a field of ontology {ontology_graph_key!r}"
+                    )
+                data_type = field_info["range"] if field_info["property_type"] == "datatype" else "object"
+                row = (ontology_field, field_info["label"], data_type, ontology_graph_key,
+                       ontology_uri or field_info.get("uri"))
+            elif ontology_uri:
+                row = (field_name, mapping.get("label") or field_name, mapping.get("data_type"), None,
+                       ontology_uri)
+            else:
+                raise InvalidMappingError(f"{field_name!r} needs either an ontology_field or an ontology_uri")
+
             cur.execute(
                 """
                 INSERT INTO dataset_mapping
-                    (dataset_id, field_name, ontology_mapping, ontology_mapping_to_display, data_type, ontology_graph_key)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                    (dataset_id, field_name, ontology_mapping, ontology_mapping_to_display, data_type,
+                     ontology_graph_key, ontology_uri, sample_value, value_range, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING *
                 """,
-                (dataset_id, field_name, ontology_field, field_info["label"], data_type, ontology_graph_key),
+                (
+                    dataset_id, field_name, *row, mapping.get("sample_value"), mapping.get("value_range"),
+                    Json(mapping["metadata"]) if mapping.get("metadata") is not None else None,
+                ),
             )
             inserted.append(dict(cur.fetchone()))
 

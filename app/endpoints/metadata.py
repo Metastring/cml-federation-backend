@@ -181,6 +181,11 @@ def _local_metadata(title: str, category_name: str):
                 m.ontology_mapping,
                 m.ontology_mapping_to_display,
                 m.data_type,
+                -- via to_jsonb so a DB without migration 20260930 still works
+                to_jsonb(m) ->> 'sample_value' AS sample_value,
+                to_jsonb(m) ->> 'value_range' AS value_range,
+                to_jsonb(m) ->> 'ontology_uri' AS ontology_uri,
+                to_jsonb(m) -> 'metadata' AS field_metadata,
 
                 st.stat_name,
                 st.stat_value,
@@ -270,7 +275,11 @@ def _local_metadata(title: str, category_name: str):
                 "field_name": row['field_name'],
                 "ontology_mapping": row['ontology_mapping'],
                 "ontology_mapping_to_display": row.get('ontology_mapping_to_display'),
-                "data_type": row['data_type']
+                "data_type": row['data_type'],
+                "sample_value": row['sample_value'],
+                "value_range": row['value_range'],
+                "ontology_uri": row['ontology_uri'],
+                "metadata": row['field_metadata'],
             }
             if field not in dataset_details["fields"]:
                 dataset_details["fields"].append(field)

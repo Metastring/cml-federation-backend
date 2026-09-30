@@ -17,7 +17,18 @@ router = APIRouter(prefix="/dataset-ontology-mapping", tags=["Registration APIs"
 
 class MappingEntry(BaseModel):
     field_name: str
-    ontology_field: str
+    # Omit (or null) for a field the contributor couldn't find in the
+    # ontology -- ontology_uri is then required and stored as the mapping.
+    ontology_field: str | None = None
+    ontology_uri: str | None = None
+    sample_value: str | None = None
+    value_range: str | None = None
+    # Free-form extra details about the field (unit, description, ...).
+    metadata: dict | None = None
+    # Only used for a field with no ontology_field: its display label and
+    # type (an ontology field takes both from the ontology).
+    label: str | None = None
+    data_type: str | None = None
 
 
 class SaveMappingsRequest(BaseModel):
@@ -34,6 +45,8 @@ _NOT_FOUND_ERRORS = (
 
 
 def _raise_for(exc: Exception):
+    if isinstance(exc, svc.InvalidMappingError):
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if isinstance(exc, _NOT_FOUND_ERRORS):
         raise HTTPException(status_code=404, detail=str(exc) or "Not found") from exc
     raise exc
@@ -72,7 +85,9 @@ def suggest_mappings(dataset_id: int, ontology_graph_key: str):
 @router.post("/{dataset_id}/mappings")
 def save_mappings(dataset_id: int, payload: SaveMappingsRequest):
     """Step 3: save {dataset field name -> ontology field} pairs, validated
-    against the chosen ontology's real field list."""
+    against the chosen ontology's real field list, with each field's
+    sample_value / value_range / ontology_uri. A field with no match in the
+    ontology is sent with ontology_uri only."""
     try:
         return svc.save_mappings(
             dataset_id, payload.ontology_graph_key, [m.model_dump() for m in payload.mappings]

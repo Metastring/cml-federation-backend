@@ -209,6 +209,10 @@ async def get_categories_with_datasets(
                 "ontology_mapping": f.get("ontology_mapping"),
                 "ontology_mapping_to_display": f.get("ontology_mapping_to_display"),
                 "data_type": f.get("data_type"),
+                "sample_value": f.get("sample_value"),
+                "value_range": f.get("value_range"),
+                "ontology_uri": f.get("ontology_uri"),
+                "metadata": f.get("metadata"),
                 "cml_term": term_key,
                 "references": crosswalk[3].get(term_key, []) if term_key else [],
             })
@@ -253,7 +257,12 @@ def _local_categories_with_datasets():
                 dm.field_name,
                 dm.ontology_mapping,
                 dm.ontology_mapping_to_display,
-                dm.data_type
+                dm.data_type,
+                -- via to_jsonb so a DB without migration 20260930 still works
+                to_jsonb(dm) ->> 'sample_value' AS sample_value,
+                to_jsonb(dm) ->> 'value_range' AS value_range,
+                to_jsonb(dm) ->> 'ontology_uri' AS ontology_uri,
+                to_jsonb(dm) -> 'metadata' AS field_metadata
             FROM
                 dataset_master ds
             JOIN
@@ -292,7 +301,11 @@ def _local_categories_with_datasets():
                 "field_name": row["field_name"],
                 "ontology_mapping": row["ontology_mapping"],
                 "ontology_mapping_to_display": row["ontology_mapping_to_display"],
-                "data_type": row["data_type"]
+                "data_type": row["data_type"],
+                "sample_value": row["sample_value"],
+                "value_range": row["value_range"],
+                "ontology_uri": row["ontology_uri"],
+                "metadata": row["field_metadata"],
             }
             term_key = _resolve_term(row["field_name"], row["ontology_mapping"], crosswalk)
             field_info["cml_term"] = term_key

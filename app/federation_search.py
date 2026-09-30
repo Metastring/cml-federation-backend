@@ -126,8 +126,12 @@ def local_catalog_datasets() -> list[dict]:
         cur.execute(
             f"""
             SELECT dataset_id, field_name, ontology_mapping, ontology_mapping_to_display,
-                   data_type, ontology_graph_key
-            FROM {MAP_DB_SCHEMA}.dataset_mapping
+                   data_type, ontology_graph_key,
+                   to_jsonb(dm) ->> 'sample_value' AS sample_value,
+                   to_jsonb(dm) ->> 'value_range' AS value_range,
+                   to_jsonb(dm) ->> 'ontology_uri' AS ontology_uri,
+                   to_jsonb(dm) -> 'metadata' AS metadata
+            FROM {MAP_DB_SCHEMA}.dataset_mapping dm
             ORDER BY dataset_mapping_id
             """
         )
@@ -135,7 +139,8 @@ def local_catalog_datasets() -> list[dict]:
         for row in cur.fetchall():
             fields_by_dataset.setdefault(row["dataset_id"], []).append(
                 {k: row[k] for k in ("field_name", "ontology_mapping", "ontology_mapping_to_display",
-                                     "data_type", "ontology_graph_key")}
+                                     "data_type", "ontology_graph_key", "sample_value", "value_range",
+                                     "ontology_uri", "metadata")}
             )
 
         result = []
