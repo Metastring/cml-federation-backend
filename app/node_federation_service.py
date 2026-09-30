@@ -259,6 +259,16 @@ def list_nodes(include_inactive: bool = False) -> list[dict]:
     return [_row_to_dict(r) for r in rows]
 
 
+def get_node(node_id: str) -> dict:
+    """One registry row, with the same lazy stale check as list_nodes. Looked
+    up in Python rather than by `node_id = %s` so a non-UUID id is a plain
+    404 instead of a Postgres cast error."""
+    for node in list_nodes(include_inactive=True):
+        if node["node_id"] == node_id:
+            return node
+    raise NodeNotFoundError(f"Node {node_id} not found")
+
+
 def _purge_federated_cache(cursor, base_url: str) -> None:
     """Revoked nodes drop out of search, and their harvested catalog goes
     with them (§6: "cached data purged"). The table only exists once the

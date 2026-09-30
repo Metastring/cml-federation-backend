@@ -30,7 +30,7 @@ import hashlib
 import json
 import os
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 import httpx
 from fastapi import HTTPException, Request
@@ -360,6 +360,64 @@ def _cached_datasets(base_urls: list[str]) -> list[dict]:
         conn.close()
 
 
+def _cached_row_to_dataset(r: dict) -> dict:
+    return {
+        "dataset_id": r["remote_dataset_id"], "title": r["title"], "category": r["category"],
+        "description": r["description"], "keywords": r["keywords"], "fields": r["fields"],
+        "row_count": r["row_count"],
+        "date_min": r["date_min"].isoformat() if r["date_min"] else None,
+        "date_max": r["date_max"].isoformat() if r["date_max"] else None,
+    }
+
+
+def _utc_iso(value: datetime) -> str:
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+async def node_datasets(node_id: str) -> dict:
+    """GET /nodes/{node_id}/datasets: one node's catalog for the registry
+    page's "View" button. Fetched live from the node (and stored into the
+    harvest cache); if the node is unreachable, the last harvested copy.
+    node_id="self" (or a registry row pointing back at this server) returns
+    this node's own catalog. Revoked nodes are never contacted."""
+    own_url = fed.NODE_BASE_URL.rstrip("/")
+
+    def payload(node: dict, source: str, harvested_at: str | None, datasets: list[dict]) -> dict:
+        return {"node": node, "datasets_source": source, "harvested_at": harvested_at,
+                "dataset_count": len(datasets), "datasets": datasets}
+
+    if node_id == "self":
+        me = self_info()
+        node = {"node_id": me["node_id"], "name": me["name"], "base_url": me["base_url"],
+                "status": "self", "is_self": True}
+    else:
+        row = await asyncio.to_thread(fed.get_node, node_id)
+        base_url = row["base_url"].rstrip("/")
+        node = {"node_id": row["node_id"], "name": row["name"], "base_url": row["base_url"],
+                "status": row["status"], "is_self": base_url == own_url}
+
+    if node["is_self"]:
+        local = await asyncio.to_thread(local_catalog_datasets)
+        return payload(node, "live", None, json.loads(json.dumps(local, default=_json_default)))
+    if node["status"] == "revoked":
+        return payload(node, "unavailable", None, [])
+
+    peer = {"node_id": node["node_id"], "name": node["name"], "base_url": base_url}
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{base_url}/node/catalog", timeout=CATALOG_TIMEOUT)
+            resp.raise_for_status()
+            catalog = resp.json()
+        await asyncio.to_thread(_store_catalog, peer, catalog)
+        return payload(node, "live", _utc_iso(datetime.now(timezone.utc)), catalog.get("datasets") or [])
+    except Exception:
+        rows = await asyncio.to_thread(_cached_datasets, [base_url])
+        if not rows:
+            return payload(node, "unavailable", None, [])
+        harvested_at = _utc_iso(max(r["harvested_at"] for r in rows))
+        return payload(node, "cache", harvested_at, [_cached_row_to_dataset(r) for r in rows])
+
+
 async def federation_catalog(category: str | None, term: str | None, q: str | None, force: bool) -> dict:
     """GET /federation/catalog: this node's datasets + every reachable peer's,
     each tagged with origin_node. `term` matches a field's ontology term IRI
@@ -375,11 +433,7 @@ async def federation_catalog(category: str | None, term: str | None, q: str | No
     for r in rows:
         datasets.append(
             {
-                "dataset_id": r["remote_dataset_id"], "title": r["title"], "category": r["category"],
-                "description": r["description"], "keywords": r["keywords"], "fields": r["fields"],
-                "row_count": r["row_count"],
-                "date_min": r["date_min"].isoformat() if r["date_min"] else None,
-                "date_max": r["date_max"].isoformat() if r["date_max"] else None,
+                **_cached_row_to_dataset(r),
                 "origin_node": {"node_id": r["origin_node_id"], "name": r["origin_node_name"],
                                 "base_url": r["origin_base_url"]},
                 "harvested_at": r["harvested_at"].isoformat(),

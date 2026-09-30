@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from app import federation_search
+from app import node_federation_service as fed
 
 # Federation Phase 2 catalog endpoints (FEDERATION_ARCHITECTURE.md §13).
 # Search itself stays on the existing /federated-search* routes via their
@@ -21,6 +22,17 @@ async def federation_catalog(
     refresh: bool = Query(default=False, description="Re-harvest every peer's catalog first instead of using the cache"),
 ):
     return await federation_search.federation_catalog(category, term, q, force=refresh)
+
+
+@router.get("/nodes/{node_id}/datasets", summary="Datasets of one registered node, or `self` for this server")
+async def node_datasets(node_id: str):
+    """Live from the node when reachable, else its last harvested copy
+    (datasets_source = live | cache | unavailable). A down node is a 200,
+    not an error; only an unknown node_id is a 404."""
+    try:
+        return await federation_search.node_datasets(node_id)
+    except fed.NodeNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.post("/federation/harvest", summary="Re-harvest every peer node's catalog now")
