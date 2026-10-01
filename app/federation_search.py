@@ -36,6 +36,7 @@ from datetime import date, datetime, timezone
 
 import httpx
 from fastapi import HTTPException, Request
+from fastapi.responses import StreamingResponse
 from psycopg2.extras import Json, RealDictCursor
 
 from app import node_federation_service as fed
@@ -525,6 +526,50 @@ async def harvest_all(force: bool = True) -> dict:
 # ---------------------------------------------------------------------------
 
 
+async def _route_datasets(client: httpx.AsyncClient, payload):
+    """Split payload.dataset between this node and the peers that own each
+    title ("<title> @ <node>" pins one node; no datasets = every dataset in
+    the requested categories). Returns (peers, skipped, catalog_status,
+    remote_rows, node_names, local_titles, titles_by_peer)."""
+    requested_categories = {c.strip().lower() for c in payload.category}
+    me = self_info()
+    peers, skipped = await list_peers(client)
+    catalog_status = await refresh_catalogs(client, peers)
+    remote_rows = await asyncio.to_thread(_cached_datasets, [p["base_url"] for p in peers])
+    local_datasets = await asyncio.to_thread(local_catalog_datasets)
+
+    local_titles_known = {_norm(d["title"]) for d in local_datasets}
+    remote_by_title: dict[str, list[dict]] = {}
+    for r in remote_rows:
+        remote_by_title.setdefault(_norm(r["title"]), []).append(r)
+
+    node_names = {me["name"]} | {r["origin_node_name"] for r in remote_rows if r["origin_node_name"]}
+    if payload.dataset:
+        local_titles, remote_pairs = [], []
+        for t in payload.dataset:
+            title, node = split_node_suffix(t, node_names)
+            if node == me["name"]:
+                local_titles.append(title)
+            elif node:
+                remote_pairs += [(r, title) for r in remote_by_title.get(_norm(title), [])
+                                 if r["origin_node_name"] == node]
+            else:
+                if _norm(t) in local_titles_known or _norm(t) not in remote_by_title:
+                    local_titles.append(t)
+                remote_pairs += [(r, t) for r in remote_by_title.get(_norm(t), [])]
+    else:
+        # No datasets named: search everything in the requested categories.
+        local_titles = [d["title"] for d in local_datasets if (d["category"] or "").lower() in requested_categories]
+        remote_pairs = [(r, r["title"]) for r in remote_rows if (r["category"] or "").lower() in requested_categories]
+
+    titles_by_peer: dict[str, list[str]] = {}
+    for r, title in remote_pairs:
+        titles_by_peer.setdefault(r["origin_base_url"], [])
+        if title not in titles_by_peer[r["origin_base_url"]]:
+            titles_by_peer[r["origin_base_url"]].append(title)
+    return peers, skipped, catalog_status, remote_rows, node_names, local_titles, titles_by_peer
+
+
 async def federate(request: Request, route_path: str, payload, local_handler):
     """Run `local_handler` for this node's share of the request and forward
     the rest to the owning peers, then merge. scope="local", or a request
@@ -532,45 +577,12 @@ async def federate(request: Request, route_path: str, payload, local_handler):
     if payload.scope == "local" or request.headers.get(HOP_HEADER):
         return await local_handler(payload)
 
-    requested_categories = {c.strip().lower() for c in payload.category}
     me = self_info()
     nodes: dict[str, dict] = {}
 
     async with httpx.AsyncClient() as client:
-        peers, skipped = await list_peers(client)
-        catalog_status = await refresh_catalogs(client, peers)
-        remote_rows = await asyncio.to_thread(_cached_datasets, [p["base_url"] for p in peers])
-        local_datasets = await asyncio.to_thread(local_catalog_datasets)
-
-        local_titles_known = {_norm(d["title"]) for d in local_datasets}
-        remote_by_title: dict[str, list[dict]] = {}
-        for r in remote_rows:
-            remote_by_title.setdefault(_norm(r["title"]), []).append(r)
-
-        node_names = {me["name"]} | {r["origin_node_name"] for r in remote_rows if r["origin_node_name"]}
-        if payload.dataset:
-            local_titles, remote_pairs = [], []
-            for t in payload.dataset:
-                title, node = split_node_suffix(t, node_names)
-                if node == me["name"]:
-                    local_titles.append(title)
-                elif node:
-                    remote_pairs += [(r, title) for r in remote_by_title.get(_norm(title), [])
-                                     if r["origin_node_name"] == node]
-                else:
-                    if _norm(t) in local_titles_known or _norm(t) not in remote_by_title:
-                        local_titles.append(t)
-                    remote_pairs += [(r, t) for r in remote_by_title.get(_norm(t), [])]
-        else:
-            # No datasets named: search everything in the requested categories.
-            local_titles = [d["title"] for d in local_datasets if (d["category"] or "").lower() in requested_categories]
-            remote_pairs = [(r, r["title"]) for r in remote_rows if (r["category"] or "").lower() in requested_categories]
-
-        titles_by_peer: dict[str, list[str]] = {}
-        for r, title in remote_pairs:
-            titles_by_peer.setdefault(r["origin_base_url"], [])
-            if title not in titles_by_peer[r["origin_base_url"]]:
-                titles_by_peer[r["origin_base_url"]].append(title)
+        peers, skipped, catalog_status, remote_rows, node_names, local_titles, titles_by_peer = \
+            await _route_datasets(client, payload)
 
         async def run_local():
             started = time.monotonic()
@@ -655,3 +667,117 @@ async def federate(request: Request, route_path: str, payload, local_handler):
             detail={"message": "No valid datasets provided.", "invalid_datasets": merged["invalid_datasets"], "nodes": nodes},
         )
     return merged
+
+
+PRESEARCH_TIMEOUT = float(os.getenv("FEDERATION_PRESEARCH_TIMEOUT_SECONDS", "30"))
+
+
+async def federate_stream(request: Request, route_path: str, payload, local_stream):
+    """federate() for the SSE availability check (/pre-federated-search):
+    stream this node's events and every owning peer's as they arrive, each
+    tagged with origin_node, then one merged "done" event. `await local_stream(payload)`
+    gives the local StreamingResponse; scope="local" or a forwarded request
+    gets it unchanged."""
+    if payload.scope == "local" or request.headers.get(HOP_HEADER):
+        return await local_stream(payload)
+
+    async def events():
+        me = self_info()
+        nodes: dict[str, dict] = {}
+        queue: asyncio.Queue = asyncio.Queue()
+        async with httpx.AsyncClient() as client:
+            peers, skipped, catalog_status, remote_rows, node_names, local_titles, titles_by_peer = \
+                await _route_datasets(client, payload)
+
+            async def relay(origin: dict, lines, key: str, status: dict):
+                # Forward data events; the source's own "done" is replaced by ours.
+                started, event, count = time.monotonic(), None, 0
+                try:
+                    async for line in lines:
+                        if line.startswith("event:"):
+                            event = line[6:].strip()
+                        elif line.startswith("data:") and event != "done":
+                            await queue.put((origin, json.loads(line[5:])))
+                            count += 1
+                        elif not line.strip():
+                            event = None
+                    nodes[key] = {**status, "status": "ok", "hits": count,
+                                  "took_ms": round((time.monotonic() - started) * 1000)}
+                except httpx.TimeoutException:
+                    nodes[key] = {**status, "status": "timeout", "hits": count}
+                except Exception as exc:
+                    nodes[key] = {**status, "status": "error", "hits": count, "error": f"{type(exc).__name__}: {exc}"[:300]}
+
+            async def run_local():
+                status = {"base_url": me["base_url"], "self": True, "datasets": local_titles}
+                if not local_titles:
+                    nodes[me["name"]] = {**status, "status": "no_matching_datasets"}
+                    return
+                try:
+                    resp = await local_stream(payload.model_copy(update={"dataset": local_titles, "scope": "local"}))
+                except HTTPException as exc:
+                    nodes[me["name"]] = {**status, "status": "no_matching_datasets" if exc.status_code == 400 else "error",
+                                         "error": str(exc.detail)[:300]}
+                    return
+
+                async def lines():
+                    async for chunk in resp.body_iterator:
+                        text = chunk.decode() if isinstance(chunk, bytes) else chunk
+                        for line in text.split("\n"):
+                            yield line
+                await relay(me, lines(), me["name"], status)
+
+            async def run_remote(peer: dict):
+                titles = titles_by_peer.get(peer["base_url"], [])
+                origin = {"node_id": peer.get("node_id"), "name": _display_name(peer, remote_rows), "base_url": peer["base_url"]}
+                key = _node_key(nodes, origin["name"], peer["base_url"])
+                status = {"base_url": peer["base_url"], **catalog_status.get(peer["base_url"], {}), "datasets": titles}
+                if not titles:
+                    nodes[key] = {**status, "status": "no_matching_datasets"}
+                    return
+                body = payload.model_dump(mode="json")
+                body.update(dataset=titles, scope="local")
+                try:
+                    async with client.stream(
+                        "POST", f"{peer['base_url']}{route_path}", json=body,
+                        timeout=httpx.Timeout(PRESEARCH_TIMEOUT, connect=CATALOG_TIMEOUT),
+                        headers={HOP_HEADER: "1", NODE_ID_HEADER: me["node_id"] or me["name"],
+                                 "Accept": "text/event-stream"},
+                    ) as resp:
+                        if resp.status_code != 200:
+                            nodes[key] = {**status, "status": "error", "error": f"HTTP {resp.status_code}: {(await resp.aread())[:300]!r}"}
+                            return
+                        await relay(origin, resp.aiter_lines(), key, status)
+                except httpx.TimeoutException:
+                    nodes.setdefault(key, {**status, "status": "timeout"})
+                except Exception as exc:
+                    nodes.setdefault(key, {**status, "status": "unreachable", "error": f"{type(exc).__name__}: {exc}"[:300]})
+
+            async def run_all():
+                try:
+                    await asyncio.gather(run_local(), *(run_remote(p) for p in peers))
+                finally:
+                    await queue.put(None)
+
+            task = asyncio.create_task(run_all())
+            seen: set[str] = set()
+            total = 0
+            try:
+                while (item := await queue.get()) is not None:
+                    origin, entry = item
+                    name = entry.get("dataset_name") or ""
+                    if name in seen:  # same title on two nodes -> name the second by its node
+                        entry["dataset_name"] = name = f"{name} @ {origin['name']}"
+                    seen.add(name)
+                    entry["origin_node"] = origin
+                    total += 1
+                    yield f"data: {json.dumps(entry, default=_json_default)}\n\n"
+            finally:
+                await task
+        for name, status in skipped.items():
+            nodes[_node_key(nodes, name, status.get("base_url", ""))] = status
+        done = {"search_text": payload.search_text.strip(), "total": total, "cached": False,
+                "scope": "federation", "nodes": nodes}
+        yield f"event: done\ndata: {json.dumps(done, default=_json_default)}\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream")

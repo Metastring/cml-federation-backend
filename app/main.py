@@ -1589,7 +1589,18 @@ def _get_map_datasets_availability(search_text: str, requested_datasets: list[st
 
 
 @app.post("/pre-federated-search")
-async def pre_federated_search(payload: FederatedSearchRequest = Body(...)):
+async def pre_federated_search(request: Request, payload: FederatedSearchRequest = Body(...)):
+    """Availability check across this node and every peer that owns one of
+    the requested datasets (scope="federation", the default) -- see
+    _pre_federated_search_local for the event format. Peer events carry
+    origin_node, like /federated-search results."""
+    _require_searchable_category(payload.category)
+    return await federation_search.federate_stream(
+        request, "/pre-federated-search", payload, _pre_federated_search_local
+    )
+
+
+async def _pre_federated_search_local(payload: FederatedSearchRequest):
     """
     Availability check — streams one SSE event per dataset as results arrive.
 
