@@ -356,15 +356,19 @@ def _best_match(field_name: str, ontology_fields: list[dict]) -> tuple[dict | No
     """Pure matching logic, split out from suggest_mappings so it's testable
     without a database: highest SequenceMatcher ratio against either the
     ontology field's own name or its display label."""
-    norm_field = _normalize_field_name(field_name)
+    # Predefined ontologies list thousands of terms (DOID ~12k), so skip a
+    # candidate as soon as the cheap upper bounds can't beat the best score;
+    # the result is the same as computing every ratio.
+    matcher = SequenceMatcher(None, _normalize_field_name(field_name), "")
     best_field, best_score = None, 0.0
     for candidate in ontology_fields:
-        score = max(
-            SequenceMatcher(None, norm_field, _normalize_field_name(candidate["value"])).ratio(),
-            SequenceMatcher(None, norm_field, _normalize_field_name(candidate["label"])).ratio(),
-        )
-        if score > best_score:
-            best_field, best_score = candidate, score
+        for text in (candidate["value"], candidate["label"]):
+            matcher.set_seq2(_normalize_field_name(text))
+            if matcher.real_quick_ratio() <= best_score or matcher.quick_ratio() <= best_score:
+                continue
+            score = matcher.ratio()
+            if score > best_score:
+                best_field, best_score = candidate, score
     return best_field, best_score
 
 # Below this ratio, don't suggest anything -- an empty dropdown beats a

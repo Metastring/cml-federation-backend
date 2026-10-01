@@ -74,20 +74,15 @@ def list_registered_ontologies() -> list[dict]:
 
 
 def _predefined_fields(graph_key: str) -> list[dict]:
+    """The ontology's terms (its non-deprecated classes, e.g. ENVO 'season'),
+    not its relations ('part of', 'has part') -- a dataset column stands for
+    a term. value is the term's IRI, so a saved mapping's ontology_mapping
+    matches the cml_term crosswalk the same way the curated rows do."""
     snapshot = load_ontology_snapshot(graph_key)
-    fields = []
-    for prop in snapshot["datatype_properties"] + snapshot["object_properties"]:
-        fields.append(
-            {
-                "value": prop["name"],
-                "label": prop["label"],
-                "class_name": prop["domains"][0] if prop["domains"] else None,
-                "property_type": prop["property_type"],
-                "range": prop["ranges"][0] if prop["ranges"] else None,
-                "uri": prop["iri"],
-            }
-        )
-    return fields
+    return [
+        {"value": cls["iri"], "label": cls["label"], "uri": cls["iri"]}
+        for cls in sorted(snapshot["classes"], key=lambda c: c["label"].lower())
+    ]
 
 
 def _custom_fields(graph_key: str) -> list[dict]:
@@ -152,7 +147,10 @@ def save_mappings(dataset_id: int, ontology_graph_key: str, mappings: list[dict]
                     raise FieldNotFoundError(
                         f"{ontology_field!r} is not a field of ontology {ontology_graph_key!r}"
                     )
-                data_type = field_info["range"] if field_info["property_type"] == "datatype" else "object"
+                if "property_type" in field_info:  # custom ontology property
+                    data_type = field_info["range"] if field_info["property_type"] == "datatype" else "object"
+                else:  # predefined ontology term: the column keeps its own type
+                    data_type = mapping.get("data_type")
                 row = (ontology_field, field_info["label"], data_type, ontology_graph_key,
                        ontology_uri or field_info.get("uri"))
             elif ontology_uri:
