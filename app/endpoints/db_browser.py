@@ -90,6 +90,20 @@ def _list_tables(dataset_name: str) -> dict:
                 (f"%{dataset_name}%",),
             )
             matches = cur.fetchall()
+            elsewhere = _datasets_on_other_nodes(cur, dataset_name)
+            if not matches and elsewhere:
+                nodes = ", ".join(sorted({d["node_name"] or d["node_url"] for d in elsewhere}))
+                raise HTTPException(
+                    status_code=404,
+                    detail={
+                        "message": (
+                            f"Dataset '{dataset_name}' is not registered on this node, it belongs to {nodes}. "
+                            "Its data tables cannot be viewed here because they do not reside on this node; "
+                            "call /db/tables on that node instead."
+                        ),
+                        "datasets_on_other_nodes": elsewhere,
+                    },
+                )
             if not matches:
                 raise HTTPException(
                     status_code=404, detail=f"No registered dataset matching '{dataset_name}' on this node."
@@ -115,9 +129,30 @@ def _list_tables(dataset_name: str) -> dict:
                 for (dataset_id, title, category, table, description, license_, version,
                      source_system, published, node_name, maintained_by) in matches
             ]
-        return {"database": DB_CONFIG["dbname"], "available": True, "count": len(datasets), "datasets": datasets}
+        result = {"database": DB_CONFIG["dbname"], "available": True, "count": len(datasets), "datasets": datasets}
+        if elsewhere:
+            result["datasets_on_other_nodes"] = elsewhere
+            result["note"] = "Datasets listed under datasets_on_other_nodes reside on other nodes; view their tables there."
+        return result
     finally:
         conn.close()
+
+
+def _datasets_on_other_nodes(cur, dataset_name: str) -> list[dict]:
+    """Peer datasets matching the name, from the catalog harvested for federated search."""
+    cur.execute(
+        """
+        SELECT title, origin_node_name, origin_base_url, remote_dataset_id
+        FROM federated_dataset_cache
+        WHERE title ILIKE %s
+        ORDER BY origin_node_name, title
+        """,
+        (f"%{dataset_name}%",),
+    )
+    return [
+        {"dataset_title": title, "node_name": node_name, "node_url": url, "dataset_id": dataset_id}
+        for title, node_name, url, dataset_id in cur.fetchall()
+    ]
 
 
 def _table_data(table: str, limit: int, offset: int) -> dict:
