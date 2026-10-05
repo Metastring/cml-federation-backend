@@ -1,9 +1,8 @@
 """Run the CPHR-106 eval question set (eval_questions.json) against the
 retrieval index for every question tagged grading.mode == "retrieval".
 
-Questions tagged grading.mode == "agent" need the ReAct agent + tool router
-(rest of Epic CPHR-92, not built yet) and are listed but skipped, so the set
-doesn't need rebuilding once that lands.
+Questions tagged grading.mode == "agent" are listed but skipped here; they
+need the live agent and LLM, see run_agent_eval.py.
 """
 from __future__ import annotations
 
@@ -51,7 +50,7 @@ def evaluate() -> int:
 
     print(f"\n{passed}/{len(retrieval_qs)} retrieval-gradable questions passed.\n")
 
-    print(f"Agent-gradable questions (pending ReAct agent, Epic CPHR-92): {len(agent_qs)}")
+    print(f"Agent-gradable questions (run eval/run_agent_eval.py): {len(agent_qs)}")
     by_category: dict[str, int] = {}
     for q in agent_qs:
         by_category[q["category"]] = by_category.get(q["category"], 0) + 1

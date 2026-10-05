@@ -8,9 +8,10 @@ dataset/field/row count backing every factual claim, and say so explicitly
 rather than guessing when the context doesn't support an answer (this is
 what the out_of_scope questions in eval/eval_questions.json check for).
 
-Not wired to an LLM yet — Ollama/vLLM serving is a separate, not-yet-done
-item in Epic CPHR-92. This module only builds the prompt string/messages;
-the caller passes them to whatever chat-completion client lands later.
+AGENT_SYSTEM_PROMPT is the same contract folded into the ReAct agent's own
+system prompt (app/agent.py): the agent answers inside its tool-calling
+conversation, so the answer step reuses the LLM's cached prompt instead of
+paying for a second cold prompt (~1 min on this CPU-only host).
 """
 from __future__ import annotations
 
@@ -27,6 +28,39 @@ Rules:
 4. If CONTEXT is empty, or every schema hit is a weak/unrelated match, treat the question as out of scope and say you don't have relevant data rather than answering from the closest-sounding term.
 5. Never state a row count, dataset name, or field name that doesn't appear verbatim in CONTEXT.
 6. Keep the answer concise: state the answer, then the citation(s). Do not restate the whole context."""
+
+
+AGENT_SYSTEM_PROMPT = """You answer questions about the datasets registered on the CML data platform (Indian climate, weather, air quality, power supply, health and crop data, plus species occurrence records). You work step by step, calling tools to look things up.
+
+TOOLS:
+{tools}
+
+DATASETS ON THIS NODE (query_data works on these; use metadata_search for anything else, e.g. peer nodes):
+{datasets}
+Species occurrence records (where a plant or animal with a scientific name was observed) are not in this list: use spatial_search for them.
+
+Reply with ONE JSON object per turn:
+{{"thought": "<what you need next and why>", "action": "<tool name or final_answer>", "action_input": {{...}}}}
+After each tool call you receive "Observation: ...". Then decide the next step.
+When you can answer, use action "final_answer" with action_input {{"answer": "<answer>"}}.
+
+Rules:
+1. Answer ONLY from observations. Never use outside knowledge to fill a gap or invent a number, name or dataset.
+2. If one dataset above clearly fits, call query_data on it directly. Otherwise find it first with metadata_search or lookup_schema.
+3. For counting, ranking, thresholds or averages use query_data; for "show the rows about <name>" use federated_search.
+4. If a tool returns an error, fix the input and retry once, or try another tool.
+5. If no dataset or tool covers the question, give a final_answer saying the platform has no data for it. Do not guess. If a tool could cover it, call that tool before saying so.
+6. All data is historical, for the dates listed above. Never present it as a forecast, as current conditions, or as covering dates outside that range; for those, say the platform has no such data.
+7. Every number or fact in the answer must cite where it came from, as (Dataset: <title>, N rows).
+8. Keep the answer short (at most 3 sentences): the answer itself, then citations. Quote real values from the observation. Never copy tables, row lists or coordinates into the answer; summarize them (count, range, top few). The user is shown the rows separately.
+
+Example:
+Question: which city had the worst air quality?
+{{"thought": "Air quality is dataset 115; rank cities by AQI.", "action": "query_data", "action_input": {{"question": "city with the highest AQI", "dataset_id": 115}}}}
+Observation: ... city | aqi\nSri ganganagar | 315
+{{"thought": "I have the answer.", "action": "final_answer", "action_input": {{"answer": "Sri Ganganagar had the worst air quality, AQI 315 (Dataset: CPCB City Air Quality Index (24 Sep 2026), 1 row)."}}}}
+
+Keep "thought" to one short sentence."""
 
 
 @dataclass

@@ -15,7 +15,7 @@ Pipeline for one question:
   3. validate_sql + run_sql: single SELECT/WITH statement touching only that
      table, run in a READ ONLY transaction with a statement timeout and a hard
      row cap. On a Postgres error the error is fed back to the LLM once.
-  4. The answer is formatted here, not by the LLM (a 1.5B model adds ~10 s and
+  4. The answer is formatted here, not by the LLM (a small model adds ~10 s and
      can misstate numbers); the LLM's own one-line interpretation of the
      question is returned alongside so the user sees how it was read.
 """
@@ -36,6 +36,10 @@ from app.retrieval_index import EMBEDDING_MODEL_NAME
 LLM_BASE_URL = os.getenv("NL_LLM_BASE_URL", "http://127.0.0.1:8095")
 LLM_MODEL = os.getenv("NL_LLM_MODEL", "local")  # llama-server serves one model and ignores this
 LLM_TIMEOUT_S = float(os.getenv("NL_LLM_TIMEOUT_S", "90"))
+# llama-server slot to pin to (start-llm.sh runs --parallel 2). The agent
+# (app/agent.py) uses slot 0; keeping this prompt in its own slot means the
+# two don't evict each other's cached prompt prefix. -1 = any free slot.
+LLM_SLOT = int(os.getenv("NL_LLM_SLOT", "1"))
 SQL_TIMEOUT_MS = int(os.getenv("NL_SQL_TIMEOUT_MS", "15000"))
 MAX_ROWS = int(os.getenv("NL_MAX_ROWS", "200"))
 
@@ -44,6 +48,16 @@ MAX_ROWS = int(os.getenv("NL_MAX_ROWS", "200"))
 DATASET_MATCH_THRESHOLD = float(os.getenv("NL_DATASET_MATCH_THRESHOLD", "0.2"))
 
 SKIP_COLUMN_TYPES = {"USER-DEFINED", "bytea"}  # geometry etc. - useless to the LLM
+
+# Text columns with at most this many distinct values get "values like: ..."
+# hints in the schema: the real values closest in meaning to the question.
+# Without them the LLM guesses filter values (e.g. category = 'Child Stunting'
+# on NFHS, whose indicators are long strings like "Children under 5 years who
+# are stunted (height for age) (%)") and gets 0 rows.
+VALUE_HINT_MAX_DISTINCT = 300
+VALUE_HINT_TOP_K = 4
+VALUE_HINT_MIN_SCORE = 0.45  # name columns (city, state) score ~0.4 on unrelated questions
+TEXT_TYPES = {"text", "character varying", "character"}
 
 
 @dataclass
@@ -171,13 +185,16 @@ QUESTION: cities where the average high temperature is above 30
 SELECT city, country, ROUND(AVG(temp_high_c)::numeric, 1) AS avg_high_c FROM city_hourly GROUP BY city, country HAVING AVG(temp_high_c) > 30 ORDER BY avg_high_c DESC LIMIT 100"""
 
 
-def _schema_block(ds: QueryableDataset, samples: list[dict]) -> str:
+def _schema_block(ds: QueryableDataset, samples: list[dict], value_hints: dict[str, list[str]] | None = None) -> str:
+    value_hints = value_hints or {}
     lines = [f"Table {ds.table} -- {ds.title}"]
     if ds.description:
         lines.append(f"-- {ds.description[:300]}")
     for name, dtype in ds.columns:
         concept = f"  -- {ds.concepts[name]}" if name in ds.concepts else ""
         lines.append(f"  {name} {dtype}{concept}")
+        if name in value_hints:
+            lines.append("    values like: " + "; ".join(f"'{v}'" for v in value_hints[name]))
     if samples:
         lines.append("Sample rows:")
         lines.extend(f"  {row}" for row in samples)
@@ -197,11 +214,57 @@ def _sample_rows(ds: QueryableDataset, n: int = 2) -> list[dict]:
         conn.close()
 
 
+_distinct_cache: dict[tuple[str, str], tuple[list[str], np.ndarray]] = {}
+
+
+def _column_values(ds: QueryableDataset, column: str) -> tuple[list[str], np.ndarray] | None:
+    """Distinct values of a low-cardinality text column and their embeddings,
+    cached per process (datasets are re-imported rarely; restart to refresh)."""
+    key = (ds.table, column)
+    if key not in _distinct_cache:
+        conn = get_connection()
+        try:
+            conn.set_session(readonly=True)
+            cur = conn.cursor()
+            cur.execute(pgsql.SQL("SELECT DISTINCT {c} FROM {t} WHERE {c} IS NOT NULL LIMIT %s").format(
+                c=pgsql.Identifier(column), t=pgsql.Identifier(ds.table)), (VALUE_HINT_MAX_DISTINCT + 1,))
+            values = sorted(str(r[0]).strip() for r in cur.fetchall())
+        finally:
+            conn.close()
+        if not values or len(values) > VALUE_HINT_MAX_DISTINCT:
+            _distinct_cache[key] = ([], np.zeros((0, 1)))
+        else:
+            _distinct_cache[key] = (values, _embed(values))
+    values, vectors = _distinct_cache[key]
+    return (values, vectors) if values else None
+
+
+def _value_hints(ds: QueryableDataset, question: str) -> dict[str, list[str]]:
+    q = _embed([question])[0]
+    hints = {}
+    for name, dtype in ds.columns:
+        if dtype not in TEXT_TYPES:
+            continue
+        found = _column_values(ds, name)
+        if not found:
+            continue
+        values, vectors = found
+        # Values named verbatim in the question first ("Good", "Kerala"):
+        # short values embed poorly, so similarity alone misses them.
+        exact = [v for v in values if re.search(rf"(?<!\w){re.escape(v.lower())}(?!\w)", question.lower())]
+        scores = vectors @ q
+        similar = [values[i] for i in np.argsort(-scores)[:VALUE_HINT_TOP_K] if scores[i] >= VALUE_HINT_MIN_SCORE]
+        top = list(dict.fromkeys(exact + similar))[:VALUE_HINT_TOP_K]
+        if top:
+            hints[name] = top
+    return hints
+
+
 def _chat(messages: list[dict]) -> str:
     try:
         resp = httpx.post(
             f"{LLM_BASE_URL}/v1/chat/completions",
-            json={"model": LLM_MODEL, "messages": messages, "temperature": 0, "max_tokens": 400},
+            json={"model": LLM_MODEL, "messages": messages, "temperature": 0, "max_tokens": 400, "id_slot": LLM_SLOT},
             timeout=LLM_TIMEOUT_S,
         )
         resp.raise_for_status()
@@ -303,7 +366,7 @@ def answer_question(question: str, dataset_id: int | None = None) -> dict:
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"SCHEMA:\n{_schema_block(ds, _sample_rows(ds))}\n\nQUESTION: {question}"},
+        {"role": "user", "content": f"SCHEMA:\n{_schema_block(ds, _sample_rows(ds), _value_hints(ds, question))}\n\nQUESTION: {question}"},
     ]
     attempts = []
     for attempt in range(2):

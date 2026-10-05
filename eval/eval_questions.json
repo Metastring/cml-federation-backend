@@ -1,247 +1,304 @@
 {
-  "_notes": "CPHR-106 (Build eval question set, under Epic CPHR-92 Agent MVP - Phase 2). Spans vocabulary / spatial / cross_partner / out_of_scope per the ticket and the Phase-2 line item in nl-agentic-search-architecture.md §6 (\"Evaluate on a hand-written question set spanning: pure vocabulary questions, single-dataset spatial questions, cross-partner federated questions, and out-of-scope questions\"). Supersedes/extends the 22-question ad-hoc set from CPHR-89 (retrieval-only, no category tagging). grading.mode == 'retrieval' is checkable today against retrieval-index/ via run_retrieval_eval.py; grading.mode == 'agent' needs the ReAct agent + tool router (rest of Epic CPHR-92) and is included now so the set doesn't need rebuilding once that lands.",
+  "_notes": "CPHR-106 eval set, rewritten 2026-10-05 for the datasets active now (the 2026-08 set targeted the Ayurveda datasets, all since deactivated). grading.mode 'retrieval' is checked by run_retrieval_eval.py against retrieval-index/ (top-1 hit). grading.mode 'agent' is checked by run_agent_eval.py against the live agent (app/agent.py): expected_tools = at least one of these tools was called; expected_dataset_id = cited by a tool result; answer_contains = every string appears in the answer (case-insensitive); expected_behavior 'no_data' = the answer says the data isn't available (tools may still be called to check). Expected values were taken from the tables by hand-written SQL on 2026-10-05; re-check them if a dataset is re-imported.",
   "no_match_threshold": 0.3,
   "registered_datasets_confirmed": [
-    "Traded Medicinal Plants of India (TMPI)",
-    "Rasashastra: A Database of Metals and Minerals used in Ayurveda",
-    "Ayurahaar – The Ahara & Nutrition Portal",
-    "CPMP Botanical Source",
-    "CPMP Drug Source"
+    "CPCB City Air Quality Index (24 Sep 2026)",
+    "NASA POWER District Daily Weather 2025",
+    "Open-Meteo ERA5 Daily Weather 2025 (Pilot Districts)",
+    "Grid-India State Daily Power Supply Position (Sep 2026)",
+    "NFHS-5 District Health Indicators (2019-21)",
+    "District-wise Crop Production"
   ],
   "questions": [
     {
       "id": "vocab-01",
       "category": "vocabulary",
-      "question": "what taste does this plant have",
-      "grading": {"mode": "retrieval", "expected_kind": "class", "expected_text_contains": "Rasa"}
+      "question": "how much rain fell in a day",
+      "grading": {
+        "mode": "retrieval",
+        "expected_kind": "dataset_field",
+        "expected_text_contains": "rainfall_mm"
+      }
     },
     {
       "id": "vocab-02",
       "category": "vocabulary",
-      "question": "what therapeutic action does this plant have",
-      "grading": {"mode": "retrieval", "expected_kind": "class", "expected_text_contains": "Karma"},
-      "note": "Regression probe for the CPHR-89 karma-ranking miss (was beaten by 'Plant Part' at 0.62 vs 0.51-0.59; fixed by enriching the Karma class/hasKarma comments in cphr-ayurveda-ontology.ttl to mirror the question's own phrasing)."
+      "question": "how polluted is the air in a city",
+      "grading": {
+        "mode": "retrieval",
+        "expected_kind": "dataset_field",
+        "expected_text_contains": "'aqi'"
+      }
     },
     {
       "id": "vocab-03",
       "category": "vocabulary",
-      "question": "which dosha does this herb affect",
-      "grading": {"mode": "retrieval", "expected_kind": "class", "expected_text_contains": "Dosha Action"}
+      "question": "how much electricity demand could not be met",
+      "grading": {
+        "mode": "retrieval",
+        "expected_kind": "dataset_field",
+        "expected_text_contains": "shortage"
+      }
     },
     {
       "id": "vocab-04",
       "category": "vocabulary",
-      "question": "what classification group or varga does this plant belong to",
-      "grading": {"mode": "retrieval", "expected_kind": "object_property", "expected_text_contains": "belongs to varga"}
+      "question": "daily maximum air temperature",
+      "grading": {
+        "mode": "retrieval",
+        "expected_kind": "dataset_field",
+        "expected_text_contains": "temp_max_c"
+      }
     },
     {
       "id": "vocab-05",
       "category": "vocabulary",
-      "question": "what is the scientific name of this plant",
-      "grading": {"mode": "retrieval", "expected_kind": "datatype_property", "expected_text_contains": "scientific name"}
+      "question": "how many tonnes of a crop were harvested",
+      "grading": {
+        "mode": "retrieval",
+        "expected_kind": "dataset_field",
+        "expected_text_contains": "production_tonnes"
+      }
     },
     {
       "id": "vocab-06",
       "category": "vocabulary",
-      "question": "what is the Sanskrit name of this plant",
-      "grading": {"mode": "retrieval", "expected_kind": "datatype_property", "expected_text_contains": "sanskrit name"}
+      "question": "how humid was it",
+      "grading": {
+        "mode": "retrieval",
+        "expected_kind": "dataset_field",
+        "expected_text_contains": "relative_humidity_pct"
+      }
     },
     {
       "id": "vocab-07",
       "category": "vocabulary",
-      "question": "does a Shamaka dosha action mean the dosha is increased or reduced",
-      "grading": {"mode": "retrieval", "expected_kind": "class", "expected_text_contains": "Shamaka/Vardhaka"},
-      "note": "Fine-grained vocabulary probe on an enum value (actionType: Shamaka/Vardhaka), not just the top-level term."
+      "question": "district health survey indicators",
+      "grading": {
+        "mode": "retrieval",
+        "expected_kind": "dataset",
+        "expected_text_contains": "NFHS-5"
+      }
     },
     {
-      "id": "vocab-08",
-      "category": "vocabulary",
-      "question": "what does a karma category of Rejuvenative mean",
-      "grading": {"mode": "retrieval", "expected_kind": "datatype_property", "expected_text_contains": "karma category"}
+      "id": "oos-r-01",
+      "category": "out_of_scope",
+      "question": "what is the current stock price of a pharma company",
+      "grading": {
+        "mode": "retrieval",
+        "expected_behavior": "reject_below_threshold"
+      }
+    },
+    {
+      "id": "oos-r-02",
+      "category": "out_of_scope",
+      "question": "book me a flight to Bangalore",
+      "grading": {
+        "mode": "retrieval",
+        "expected_behavior": "reject_below_threshold"
+      }
+    },
+    {
+      "id": "oos-r-03",
+      "category": "out_of_scope",
+      "question": "who won the cricket world cup",
+      "grading": {
+        "mode": "retrieval",
+        "expected_behavior": "reject_below_threshold"
+      }
+    },
+    {
+      "id": "data-01",
+      "category": "single_dataset",
+      "question": "which 3 cities had the worst air quality?",
+      "grading": {
+        "mode": "agent",
+        "expected_tools": [
+          "query_data"
+        ],
+        "expected_dataset_id": 115,
+        "answer_contains": [
+          "Sri Ganganagar",
+          "315",
+          "Pithampur",
+          "Gurugram"
+        ]
+      }
+    },
+    {
+      "id": "data-02",
+      "category": "single_dataset",
+      "question": "which districts in Kerala got more than 100 mm of rain in a single day in 2025?",
+      "grading": {
+        "mode": "agent",
+        "expected_tools": [
+          "query_data"
+        ],
+        "expected_dataset_id": 116,
+        "answer_contains": [
+          "Kasaragod",
+          "136.5"
+        ]
+      }
+    },
+    {
+      "id": "data-03",
+      "category": "single_dataset",
+      "question": "which state had the largest total energy shortage in September 2026?",
+      "grading": {
+        "mode": "agent",
+        "expected_tools": [
+          "query_data"
+        ],
+        "expected_dataset_id": 118,
+        "answer_contains": [
+          "Punjab",
+          "91."
+        ]
+      }
+    },
+    {
+      "id": "data-04",
+      "category": "single_dataset",
+      "question": "in which district is child stunting highest?",
+      "grading": {
+        "mode": "agent",
+        "expected_tools": [
+          "query_data"
+        ],
+        "expected_dataset_id": 119,
+        "answer_contains": [
+          "West Singhbhum",
+          "60.6"
+        ]
+      },
+      "note": "NFHS stores indicators as rows (indicator, value), so the SQL must filter on the indicator text."
+    },
+    {
+      "id": "data-05",
+      "category": "single_dataset",
+      "question": "which district produced the most of any single crop, and how much?",
+      "grading": {
+        "mode": "agent",
+        "expected_tools": [
+          "query_data"
+        ],
+        "expected_dataset_id": 137,
+        "answer_contains": [
+          "Jaipur",
+          "Bajra",
+          "74225"
+        ]
+      }
+    },
+    {
+      "id": "data-06",
+      "category": "single_dataset",
+      "question": "what was the highest temperature recorded in any district in 2025?",
+      "grading": {
+        "mode": "agent",
+        "expected_tools": [
+          "query_data"
+        ],
+        "expected_dataset_id": 116,
+        "answer_contains": [
+          "49.0"
+        ]
+      },
+      "note": "Ferozepur (Punjab), 49.03 C; the question asks for the value only."
+    },
+    {
+      "id": "data-07",
+      "category": "single_dataset",
+      "question": "how many cities had Good air quality?",
+      "grading": {
+        "mode": "agent",
+        "expected_tools": [
+          "query_data"
+        ],
+        "expected_dataset_id": 115,
+        "answer_contains": [
+          "70"
+        ]
+      }
+    },
+    {
+      "id": "rows-01",
+      "category": "row_lookup",
+      "question": "show me the weather records for Pune",
+      "grading": {
+        "mode": "agent",
+        "expected_tools": [
+          "federated_search",
+          "query_data"
+        ],
+        "expected_dataset_id": 116,
+        "answer_contains": [
+          "Pune"
+        ]
+      }
     },
     {
       "id": "spatial-01",
       "category": "spatial",
-      "question": "where is Terminalia chebula found, in the TMPI dataset",
+      "question": "where has Terminalia chebula been observed?",
       "grading": {
         "mode": "agent",
-        "expected_tool": "spatial_search",
-        "expected_dataset_title": "Traded Medicinal Plants of India (TMPI)",
-        "expected_search_text": "Terminalia chebula"
-      },
-      "note": "/v2/spatial_search is a scientific-name-scoped geometry lookup (ScientificNameSearchRequest: search_text + dataset[0]==exact dataset_master.title), not a free-form polygon filter - phrase spatial questions accordingly."
-    },
-    {
-      "id": "spatial-02",
-      "category": "spatial",
-      "question": "show me the location of Terminalia chebula in the CPMP Botanical Source dataset",
-      "grading": {
-        "mode": "agent",
-        "expected_tool": "spatial_search",
-        "expected_dataset_title": "CPMP Botanical Source",
-        "expected_search_text": "Terminalia chebula"
-      }
-    },
-    {
-      "id": "spatial-03",
-      "category": "spatial",
-      "question": "give me the geographic coordinates for Haritaki in the Traded Medicinal Plants of India dataset",
-      "grading": {
-        "mode": "agent",
-        "expected_tool": "spatial_search",
-        "expected_dataset_title": "Traded Medicinal Plants of India (TMPI)",
-        "expected_search_text": "Haritaki"
-      },
-      "note": "Uses a common/vernacular name ('Haritaki') rather than the binomial - tests whether the agent resolves it to a scientific name before calling spatial_search, or passes it through and gets zero results."
-    },
-    {
-      "id": "spatial-04",
-      "category": "spatial",
-      "question": "plot Azadirachta indica occurrences from the CPMP Botanical Source data",
-      "grading": {
-        "mode": "agent",
-        "expected_tool": "spatial_search",
-        "expected_dataset_title": "CPMP Botanical Source",
-        "expected_search_text": "Azadirachta indica"
-      }
-    },
-    {
-      "id": "spatial-05",
-      "category": "spatial",
-      "question": "is there mapped location data for Rasashastra's metal and mineral records",
-      "grading": {
-        "mode": "agent",
-        "expected_tool": "reject_no_geometry",
-        "expected_dataset_title": "Rasashastra: A Database of Metals and Minerals used in Ayurveda"
-      },
-      "note": "Rasashastra is registered in dataset_master (id 89) but has no geom-backed table in ontop/mapping/cphr.obda - correct behavior is to say this dataset has no spatial data, not to call spatial_search and surface an empty/wrong result."
-    },
-    {
-      "id": "spatial-06",
-      "category": "spatial",
-      "question": "map the distribution of scientific name Withania somnifera without telling me which dataset",
-      "grading": {
-        "mode": "agent",
-        "expected_tool": "spatial_search",
-        "expected_dataset_title": null,
-        "expected_search_text": "Withania somnifera"
-      },
-      "note": "No dataset named -> exercises the legacy no-dataset path of /v2/spatial_search (searches all registered tables); agent should either call it dataset-less or ask which dataset, not silently pick one dataset title on the user's behalf."
-    },
-    {
-      "id": "cross-01",
-      "category": "cross_partner",
-      "question": "which datasets record whether a plant is traded in India",
-      "grading": {
-        "mode": "agent",
-        "expected_tool": "federated_search",
-        "expected_partner_datasets": ["Traded Medicinal Plants of India (TMPI)", "Ayurahaar – The Ahara & Nutrition Portal"]
-      },
-      "note": "Spans >=2 partner sources with matching ontology_mapping ('is_traded_in_india' on both TMPI and Ayurahaar per retrieval-index/index_meta.json) - the point of 'cross-partner' is that no single dataset_field answers it alone."
-    },
-    {
-      "id": "cross-02",
-      "category": "cross_partner",
-      "question": "compare the vernacular / common names for Terminalia chebula across all registered datasets",
-      "grading": {
-        "mode": "agent",
-        "expected_tool": "federated_search",
-        "expected_partner_datasets": [
-          "Traded Medicinal Plants of India (TMPI)",
-          "Ayurahaar – The Ahara & Nutrition Portal",
-          "CPMP Botanical Source"
+        "expected_tools": [
+          "spatial_search"
+        ],
+        "expected_dataset_id": null,
+        "answer_contains": [
+          "26"
         ]
       },
-      "note": "vernacular_name_common_names ontology_mapping appears on 3 datasets with 3 different field names (common_name, vernacular_name, commonNames) - a real fan-out test of ontology-mediated federation, not just literal field-name matching (see cphr-map-module memory: field_name vs ontology_mapping)."
+      "note": "26 occurrence records, all in India (countrycode IN)."
     },
     {
-      "id": "cross-03",
-      "category": "cross_partner",
-      "question": "what recipes use this ingredient, and is it also listed as a traded drug",
+      "id": "schema-01",
+      "category": "vocabulary",
+      "question": "what does the rainfall_mm field measure and in what unit?",
       "grading": {
         "mode": "agent",
-        "expected_tool": "federated_search",
-        "expected_partner_datasets": ["Ayurahaar – The Ahara & Nutrition Portal", "CPMP Drug Source"]
-      },
-      "note": "Two-part question requiring two different partner sources; agent should either chain two tool calls or one federated_search fan-out covering both, not just answer the first half."
-    },
-    {
-      "id": "cross-04",
-      "category": "cross_partner",
-      "question": "find this plant in the Kew Plant Database",
-      "grading": {
-        "mode": "agent",
-        "expected_tool": "federated_search",
-        "expected_partner_datasets": ["Traded Medicinal Plants of India (TMPI)"]
-      },
-      "note": "'Kew Plant Database' is federated_sources.dataset_name, not the dataset_master.title ('Traded Medicinal Plants of India (TMPI)') that dataset_mapping/spatial_search/the retrieval index all key on - tests whether the agent resolves this alias correctly instead of treating it as an unknown/out-of-scope dataset."
-    },
-    {
-      "id": "cross-05",
-      "category": "cross_partner",
-      "question": "what is the drug name for this plant in the CPMP Drug Source dataset, and what is its Ayurahaar dosha action",
-      "grading": {
-        "mode": "agent",
-        "expected_tool": "federated_search",
-        "expected_partner_datasets": ["CPMP Drug Source", "Ayurahaar – The Ahara & Nutrition Portal"]
+        "expected_tools": [
+          "lookup_schema",
+          "metadata_search"
+        ],
+        "expected_dataset_id": null,
+        "answer_contains": [
+          "mm"
+        ]
       }
     },
     {
-      "id": "cross-06",
-      "category": "cross_partner",
-      "question": "which partner sources have any data at all on this plant",
+      "id": "oos-a-01",
+      "category": "out_of_scope",
+      "question": "what is the GDP of Maharashtra?",
       "grading": {
         "mode": "agent",
-        "expected_tool": "federated_search",
-        "expected_partner_datasets": [
-          "Traded Medicinal Plants of India (TMPI)",
-          "Rasashastra: A Database of Metals and Minerals used in Ayurveda",
-          "Ayurahaar – The Ahara & Nutrition Portal",
-          "CPMP Botanical Source",
-          "CPMP Drug Source"
-        ]
+        "expected_behavior": "no_data"
       },
-      "note": "Broadest fan-out case - all 5 dataset_mapping-registered partners are in scope; a right answer says which ones actually returned a hit, not just which were queried."
+      "note": "No economic dataset is registered."
     },
     {
-      "id": "oos-01",
+      "id": "oos-a-02",
       "category": "out_of_scope",
-      "question": "weather forecast for Delhi",
-      "grading": {"mode": "retrieval", "expected_behavior": "reject_below_threshold"},
-      "note": "Baseline adversarial case from CPHR-89 (score ~0.24, well under 0.3)."
+      "question": "what will the weather be in Delhi next week?",
+      "grading": {
+        "mode": "agent",
+        "expected_behavior": "no_data"
+      },
+      "note": "Weather data is historical (2025); there is no forecast."
     },
     {
-      "id": "oos-02",
-      "category": "out_of_scope",
-      "question": "what is the current stock price of a pharma company",
-      "grading": {"mode": "retrieval", "expected_behavior": "reject_below_threshold"}
-    },
-    {
-      "id": "oos-03",
-      "category": "out_of_scope",
-      "question": "book me a flight to Bangalore",
-      "grading": {"mode": "retrieval", "expected_behavior": "reject_below_threshold"}
-    },
-    {
-      "id": "oos-04",
-      "category": "out_of_scope",
-      "question": "what is the maximum safe daily dosage of this plant in milligrams",
-      "grading": {"mode": "agent", "expected_behavior": "reject_known_gap"},
-      "note": "Known ontology gap: no dosage/toxicity class or property exists in cphr-ayurveda-ontology.ttl. Likely to score above 0.3 by drifting to related terms (Karma, description) since it's on-topic vocabulary-adjacent, not off-topic - so this is NOT reliably threshold-gradable and must be checked at the agent/answer level: correct behavior is 'I don't have dosage data', not a guessed number from the wrong field."
-    },
-    {
-      "id": "oos-05",
-      "category": "out_of_scope",
-      "question": "search for this plant in the WHO Global Ayurveda Registry",
-      "grading": {"mode": "agent", "expected_behavior": "reject_unregistered_dataset"},
-      "note": "Names a plausible-sounding but non-existent partner source (not in federated_sources, unlike the real 'Kew Plant Database' alias in cross-04) - agent must not silently substitute a real dataset."
-    },
-    {
-      "id": "oos-06",
+      "id": "oos-a-03",
       "category": "out_of_scope",
       "question": "recommend an Ayurvedic treatment plan for my knee pain",
-      "grading": {"mode": "agent", "expected_behavior": "reject_scope"},
-      "note": "In-domain vocabulary (dosha/karma/etc. are all real terms here) but outside the system's actual scope (a data-retrieval assistant over registered datasets, not a diagnostic/prescribing tool) - the harder out-of-scope case: retrieval will find plausible-looking hits, so rejection has to come from task framing, not the similarity score."
+      "grading": {
+        "mode": "agent",
+        "expected_behavior": "no_data"
+      },
+      "note": "Out of scope: medical advice; the Ayurveda datasets are inactive."
     }
   ]
 }

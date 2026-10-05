@@ -1,8 +1,10 @@
 """Build the embedding retrieval index (architecture-doc §5.1) over the
-registered TTL ontologies + `dataset_mapping`.
+active datasets + their `dataset_mapping` fields (and, opt-in, the registered
+TTL ontologies).
 
-Each ontology class/property and each `dataset_mapping` row becomes one short
-text snippet, embedded with a local sentence-transformer and stored in a
+Each active dataset, each of its `dataset_mapping` rows and (with
+--with-ontologies) each ontology class/property becomes one short text
+snippet, embedded with a local sentence-transformer and stored in a
 FAISS index (decided over pgvector 2026-08-21 — no OS-level Postgres
 extension available on this host and no sudo to install one; FAISS needs
 neither). At query time, a question gets embedded and matched against this
@@ -42,7 +44,7 @@ NO_MATCH_THRESHOLD = 0.3
 @dataclass
 class IndexEntry:
     text: str
-    kind: str  # "class" | "object_property" | "datatype_property" | "dataset_field"
+    kind: str  # "class" | "object_property" | "datatype_property" | "dataset" | "dataset_field"
     source: str  # graph_key (ttl) or "dataset_mapping"
     uri: str | None = None
     label: str | None = None
@@ -50,6 +52,8 @@ class IndexEntry:
     dataset_title: str | None = None
     field_name: str | None = None
     ontology_mapping: str | None = None
+    unit: str | None = None
+    value_range: str | None = None
 
 
 def _local_name(uri: rdflib.URIRef) -> str:
@@ -102,40 +106,81 @@ def extract_ontology_entries() -> list[IndexEntry]:
     return entries
 
 
-def extract_dataset_mapping_entries() -> list[IndexEntry]:
-    """One entry per dataset_mapping row, joined to dataset_master.title —
-    "this physical field, in this dataset, means this ontology concept"."""
+def _unit_name(unit: str | None) -> str | None:
+    """qudt IRI -> its local name ("http://qudt.org/vocab/unit/MilliM" -> "MilliM")."""
+    return unit.rstrip("/").rsplit("/", 1)[-1] if unit else None
+
+
+def extract_dataset_entries() -> list[IndexEntry]:
+    """One entry per active dataset and one per mapped field of it --
+    "this physical field, in this dataset, means this ontology concept",
+    with the field's definition/unit/range from dataset_mapping.metadata so a
+    question can match on any of them. Inactive datasets are skipped: they
+    can't be queried, so retrieving them only misleads the agent."""
     conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute("""
-            SELECT dm.dataset_id, dmr.title, dm.field_name, dm.ontology_mapping, dm.ontology_mapping_to_display
+            SELECT m.dataset_id, m.title, COALESCE(m.description, ''), COALESCE(m.keywords, ''),
+                   COALESCE(c.category_name, '')
+            FROM dataset_master m
+            LEFT JOIN category_master c ON c.category_id = m.category_id
+            WHERE m.is_active
+            ORDER BY m.dataset_id
+        """)
+        datasets = cur.fetchall()
+        cur.execute("""
+            SELECT dm.dataset_id, dmr.title, dm.field_name, dm.ontology_mapping, dm.ontology_mapping_to_display,
+                   dm.value_range, dm.metadata
             FROM dataset_mapping dm
             JOIN dataset_master dmr ON dmr.dataset_id = dm.dataset_id
+            WHERE dmr.is_active
             ORDER BY dm.dataset_id, dm.field_name
         """)
-        rows = cur.fetchall()
+        fields = cur.fetchall()
         cur.close()
     finally:
         conn.close()
 
     entries = []
-    for dataset_id, title, field_name, ontology_mapping, display in rows:
+    for dataset_id, title, description, keywords, category in datasets:
+        text = f"Dataset '{title}' ({category}): {description[:300]} Keywords: {keywords}"
+        entries.append(IndexEntry(text=text, kind="dataset", source="dataset_master",
+                                  dataset_id=dataset_id, dataset_title=title))
+
+    for dataset_id, title, field_name, ontology_mapping, display, value_range, metadata in fields:
+        metadata = metadata or {}
         concept = display or ontology_mapping
         text = f"Dataset '{title}' has field '{field_name}', representing '{concept}'"
+        if metadata.get("definition"):
+            text += f": {metadata['definition']}"
+        unit = _unit_name(metadata.get("unit"))
+        if unit:
+            text += f" Unit: {unit}."
         entries.append(IndexEntry(
             text=text, kind="dataset_field", source="dataset_mapping",
             dataset_id=dataset_id, dataset_title=title,
             field_name=field_name, ontology_mapping=ontology_mapping,
+            unit=unit, value_range=value_range,
         ))
     return entries
 
 
-def build_index(index_path: Path = DEFAULT_INDEX_PATH, meta_path: Path = DEFAULT_META_PATH) -> dict[str, int]:
+def build_index(
+    index_path: Path = DEFAULT_INDEX_PATH,
+    meta_path: Path = DEFAULT_META_PATH,
+    with_ontologies: bool = False,
+) -> dict[str, int]:
+    """with_ontologies also indexes every class/property of every registered
+    ttl. Off by default: the registry is now full public ontologies (DOID,
+    ENVO, SWEET, CF...), whose tens of thousands of terms drown out the few
+    dozen dataset fields a question can actually be answered from."""
     import faiss
     from sentence_transformers import SentenceTransformer
 
-    entries = extract_ontology_entries() + extract_dataset_mapping_entries()
+    entries = extract_dataset_entries()
+    if with_ontologies:
+        entries += extract_ontology_entries()
     if not entries:
         raise SystemExit("No entries extracted from ttl/dataset_mapping — nothing to index.")
 
@@ -166,6 +211,28 @@ def load_index(index_path: Path = DEFAULT_INDEX_PATH, meta_path: Path = DEFAULT_
     return index, meta["model"], [IndexEntry(**e) for e in meta["entries"]]
 
 
+# Loaded once per process and reloaded only when the index file changes:
+# the agent calls search() several times per question, and loading the
+# sentence-transformer alone takes seconds.
+_loaded: dict[tuple, tuple] = {}
+_models: dict = {}
+
+
+def _cached_index(index_path: Path, meta_path: Path):
+    key = (str(index_path), str(meta_path))
+    mtime = (index_path.stat().st_mtime, meta_path.stat().st_mtime)
+    if key not in _loaded or _loaded[key][0] != mtime:
+        _loaded[key] = (mtime, load_index(index_path, meta_path))
+    return _loaded[key][1]
+
+
+def _cached_model(model_name: str):
+    if model_name not in _models:
+        from sentence_transformers import SentenceTransformer
+        _models[model_name] = SentenceTransformer(model_name)
+    return _models[model_name]
+
+
 def search(
     query: str,
     k: int = 5,
@@ -175,10 +242,8 @@ def search(
 ) -> list[tuple[float, IndexEntry]]:
     """min_score filters out hits below the threshold (e.g. NO_MATCH_THRESHOLD)
     so a caller can tell "no relevant match" apart from a genuine low-ranked hit."""
-    from sentence_transformers import SentenceTransformer
-
-    index, model_name, entries = load_index(index_path, meta_path)
-    model = SentenceTransformer(model_name)
+    index, model_name, entries = _cached_index(index_path, meta_path)
+    model = _cached_model(model_name)
     query_vec = model.encode([query], convert_to_numpy=True, normalize_embeddings=True).astype("float32")
     scores, indices = index.search(query_vec, k)
     results = [(float(score), entries[i]) for score, i in zip(scores[0], indices[0]) if i != -1]
@@ -193,6 +258,7 @@ def main() -> None:
     ap.add_argument("--meta", type=Path, default=DEFAULT_META_PATH)
     ap.add_argument("--query", type=str, default=None, help="If given, skip building and just run a search against the existing index.")
     ap.add_argument("--k", type=int, default=5)
+    ap.add_argument("--with-ontologies", action="store_true", help="Also index every registered ttl's classes/properties (slow, large).")
     ap.add_argument("--min-score", type=float, default=None, help=f"Drop hits below this cosine similarity (try {NO_MATCH_THRESHOLD} for 'no match' filtering).")
     args = ap.parse_args()
 
@@ -204,7 +270,7 @@ def main() -> None:
             print(f"{score:.4f}  [{entry.kind}]  {entry.text}")
         return
 
-    counts = build_index(args.index, args.meta)
+    counts = build_index(args.index, args.meta, with_ontologies=args.with_ontologies)
     print(f"Wrote index to {args.index} and metadata to {args.meta}")
     print("Entries by kind:", counts, "- total:", sum(counts.values()))
 
