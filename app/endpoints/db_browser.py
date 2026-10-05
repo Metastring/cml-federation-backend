@@ -70,23 +70,52 @@ def _count(cur, table: str) -> int:
     return cur.fetchone()[0]
 
 
-def _list_tables() -> dict:
+def _list_tables(dataset_name: str) -> dict:
     conn = _connect()
     try:
         with conn.cursor() as cur:
-            cur.execute(REGISTERED_TABLES_SQL + " ORDER BY m.dataset_id")
-            tables = [
+            cur.execute(
+                """
+                SELECT m.dataset_id, m.title, c.category_name, split_part(l.geoserver_name, ':', 2),
+                       m.description, m.license, m.dataset_version, m.source_system,
+                       m.publication_date, m.node_name, m.node_maintained_by
+                FROM dataset_master m
+                JOIN map_layer_info l ON l.dataset_id = m.dataset_id
+                LEFT JOIN category_master c ON c.category_id = m.category_id
+                JOIN information_schema.tables t
+                  ON t.table_schema = 'public' AND t.table_name = split_part(l.geoserver_name, ':', 2)
+                WHERE m.is_active AND position(':' in l.geoserver_name) > 0 AND m.title ILIKE %s
+                ORDER BY m.dataset_id
+                """,
+                (f"%{dataset_name}%",),
+            )
+            matches = cur.fetchall()
+            if not matches:
+                raise HTTPException(
+                    status_code=404, detail=f"No registered dataset matching '{dataset_name}' on this node."
+                )
+            datasets = [
                 {
                     "dataset_id": dataset_id,
                     "dataset_title": title,
                     "category": category,
+                    "description": description,
+                    "license": license_,
+                    "version": version,
+                    "source_system": source_system,
+                    "publication_date": _jsonable(published),
+                    "node_name": node_name,
+                    "maintained_by": maintained_by,
+                    "database": DB_CONFIG["dbname"],
+                    "schema": "public",
                     "table": table,
                     "row_count": _count(cur, table),
                     "columns": _columns(cur, table),
                 }
-                for dataset_id, title, category, table in cur.fetchall()
+                for (dataset_id, title, category, table, description, license_, version,
+                     source_system, published, node_name, maintained_by) in matches
             ]
-        return {"database": DB_CONFIG["dbname"], "available": True, "count": len(tables), "tables": tables}
+        return {"database": DB_CONFIG["dbname"], "available": True, "count": len(datasets), "datasets": datasets}
     finally:
         conn.close()
 
@@ -131,10 +160,12 @@ def _table_data(table: str, limit: int, offset: int) -> dict:
         conn.close()
 
 
-@router.get("/tables", summary="List the tables of this node's registered datasets")
-async def list_tables():
+@router.get("/tables", summary="Database table and details of a registered dataset, by name")
+async def list_tables(
+    dataset_name: str = Query(min_length=2, description="Dataset title or part of it, e.g. rainfall, crop"),
+):
     try:
-        return await run_in_threadpool(_list_tables)
+        return await run_in_threadpool(_list_tables, dataset_name.strip())
     except DatabaseUnavailable as exc:
         raise HTTPException(status_code=503, detail={"available": False, "message": str(exc)})
 
