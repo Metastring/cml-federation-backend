@@ -6,7 +6,7 @@ import re
 from contextlib import contextmanager
 from difflib import SequenceMatcher
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 from fastapi import UploadFile
 from openpyxl import load_workbook
@@ -133,10 +133,19 @@ def parse_csv_fields(text: str) -> list[dict]:
 
 
 def parse_xlsx_fields(content: bytes) -> list[dict]:
-    workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
-    rows = workbook.active.iter_rows(values_only=True)
-    header = next(rows, None) or ()
-    first_data_row = next(rows, None) or ()
+    return _xlsx_fields(io.BytesIO(content))
+
+
+def _xlsx_fields(source) -> list[dict]:
+    """source: a path or file-like. read_only mode streams rows, so only the
+    header and first data row are actually read, even on large sheets."""
+    workbook = load_workbook(source, read_only=True, data_only=True)
+    try:
+        rows = workbook.active.iter_rows(values_only=True)
+        header = next(rows, None) or ()
+        first_data_row = next(rows, None) or ()
+    finally:
+        workbook.close()
 
     fields = []
     for idx, name in enumerate(header):
@@ -611,12 +620,66 @@ def save_file_reference_source(
         )
 
 
+_LOCAL_SNIFF_BYTES = 8192
+
+
+def _is_local_file_reference(uri: str) -> bool:
+    """Bare paths and file:// URIs. A one-letter "scheme" is a Windows drive
+    letter (C:\\data\\x.csv), not a real scheme."""
+    scheme = _reference_uri_scheme(uri)
+    return scheme in ("", "file") or len(scheme) == 1
+
+
+def _local_reference_path(uri: str) -> Path:
+    if _reference_uri_scheme(uri) == "file":
+        return Path(unquote(urlsplit(uri).path))
+    return Path(uri).expanduser()
+
+
+def _check_local_file_reference(uri: str, file_format: str | None) -> tuple[str, str, list[dict] | None]:
+    """Bare path / file:// reachability, resolved on the backend host (inside
+    the container, if dockerised -- not the contributor's machine). Reads a
+    header only, same as the http(s) branch; never loads the whole file."""
+    path = _local_reference_path(uri)
+    if not path.exists():
+        return "unreachable", f"No such file on the backend host: {path}", None
+    if not path.is_file():
+        return "unreachable", f"Not a regular file: {path}", None
+
+    file_format = (file_format or path.suffix.lstrip(".")).lower()
+    try:
+        size = path.stat().st_size
+        if file_format == "csv":
+            with path.open("rb") as fh:
+                chunk = fh.read(_LOCAL_SNIFF_BYTES)
+            text = chunk.decode("utf-8", errors="replace")
+            if len(chunk) == _LOCAL_SNIFF_BYTES and "\n" in text:
+                text = text[: text.rfind("\n")]  # drop the row the chunk cut through
+            detected_fields = parse_csv_fields(text) or None
+        elif file_format in ("xlsx", "xlsm"):
+            detected_fields = _xlsx_fields(path) or None
+        else:
+            with path.open("rb") as fh:
+                fh.read(1)
+            detected_fields = None
+    except PermissionError:
+        return "unreachable", f"Permission denied reading {path} as the backend process user", None
+    except Exception as exc:
+        return "unreachable", f"Could not read {path}: {str(exc)[:400]}", None
+
+    detail = f"Reachable · local file · {size} bytes"
+    if detected_fields:
+        detail += f" · {len(detected_fields)} columns detected in header"
+    return "reachable", detail, detected_fields
+
+
 async def verify_file_reference(dataset_id: int) -> dict:
     """"Verify reachability" for a file reference. http(s) URIs get a
-    ranged GET to sniff a header row; other schemes (s3://, nfs://, smb://,
-    or a bare local path) can't be resolved from this process without
-    scheme-specific credentials/drivers we don't have, so they're reported
-    as 'unverified' with an explanation rather than guessed at."""
+    ranged GET to sniff a header row; bare paths and file:// URIs are opened
+    on the backend host and their header read. Other schemes (s3://, nfs://,
+    smb://) can't be resolved from this process without scheme-specific
+    credentials/drivers we don't have, so they're reported as 'unverified'
+    with an explanation rather than guessed at."""
     with _cursor() as cur:
         cur.execute("SELECT * FROM dataset_source_config WHERE dataset_id = %s", (dataset_id,))
         config = cur.fetchone()
@@ -646,10 +709,12 @@ async def verify_file_reference(dataset_id: int) -> dict:
                 status, detail = "unreachable", f"Server responded HTTP {response.status_code}"
         except Exception as exc:
             status, detail = "unreachable", str(exc)[:500]
+    elif _is_local_file_reference(uri):
+        status, detail, detected_fields = _check_local_file_reference(uri, config.get("file_format"))
     else:
         status = "unverified"
         detail = (
-            f"Reachability checks aren't supported yet for '{scheme or 'local path'}' references -- "
+            f"Reachability checks aren't supported yet for '{scheme}://' references -- "
             "confirm manually that this path is reachable from the node before publishing."
         )
 

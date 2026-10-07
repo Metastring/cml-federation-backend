@@ -135,7 +135,7 @@ def save_file_reference(dataset_id: int, payload: FileReferenceInput):
 
 @router.post("/{dataset_id}/reference/file/verify")
 async def verify_file_reference(dataset_id: int):
-    """"Verify reachability" for a file reference (http/https only -- see
+    """"Verify reachability" for a file reference (http(s), bare paths and file:// -- see
     dataset_registration_service.verify_file_reference for other schemes)."""
     try:
         return await svc.verify_file_reference(dataset_id)
