@@ -532,6 +532,10 @@ def publish(dataset_id: int) -> dict:
         )
         row = dict(cur.fetchone())
 
+    # Kept outside the publish transaction: a bad or unreachable file must
+    # not block publishing, it just leaves the dataset catalog-local.
+    row["materialized"] = materialize_file_reference(dataset_id)
+
     try:
         from app.retrieval_index import build_index
         build_index()
@@ -671,6 +675,180 @@ def _check_local_file_reference(uri: str, file_format: str | None) -> tuple[str,
     if detected_fields:
         detail += f" · {len(detected_fields)} columns detected in header"
     return "reachable", detail, detected_fields
+
+
+# --- Materialising file references (2026-10-07) -----------------------------
+# Search (main.py) and federation (/node/catalog in federation_search.py)
+# only see datasets backed by a table linked through map_layer_info, so a
+# reference-only CSV/XLSX was listed on its own node and nowhere else. On
+# publish we load the referenced file into a table in THIS node's database
+# and link it -- a node-local working copy, refreshed by re-publishing. The
+# source of truth is still the reference; nothing leaves the owning node.
+
+MATERIALIZE_MAX_BYTES = 100 * 1024 * 1024
+_PG_BIGINT_MAX = 2**63 - 1
+
+
+def _reference_bytes(uri: str) -> bytes:
+    if _is_local_file_reference(uri):
+        path = _local_reference_path(uri)
+        if path.stat().st_size > MATERIALIZE_MAX_BYTES:
+            raise ValueError(f"{path} is larger than {MATERIALIZE_MAX_BYTES} bytes")
+        return path.read_bytes()
+    if _reference_uri_scheme(uri) in ("http", "https"):
+        import httpx
+
+        response = httpx.get(uri, timeout=60.0, follow_redirects=True)
+        response.raise_for_status()
+        if len(response.content) > MATERIALIZE_MAX_BYTES:
+            raise ValueError(f"{uri} is larger than {MATERIALIZE_MAX_BYTES} bytes")
+        return response.content
+    raise ValueError(f"Can't load '{_reference_uri_scheme(uri)}://' references")
+
+
+def read_tabular_rows(content: bytes, file_format: str) -> tuple[list[str], list[list]]:
+    """Header + data rows of a CSV/XLSX file, blank rows dropped."""
+    if file_format == "csv":
+        rows = list(csv.reader(io.StringIO(content.decode("utf-8-sig", errors="replace"))))
+    elif file_format in ("xlsx", "xlsm"):
+        workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        try:
+            rows = [list(r) for r in workbook.active.iter_rows(values_only=True)]
+        finally:
+            workbook.close()
+    else:
+        raise ValueError(f"Can't load '{file_format or '?'}' files -- only csv and xlsx")
+    rows = [r for r in rows if any(v not in (None, "") for v in r)]
+    if not rows:
+        raise ValueError("File has no header row")
+    header = [_stringify(h) or "" for h in rows[0]]
+    return header, rows[1:]
+
+
+def _column_names(header: list[str]) -> list[str]:
+    """Postgres-safe, unique, lowercase column names."""
+    names: list[str] = []
+    for idx, raw in enumerate(header):
+        name = re.sub(r"\W+", "_", raw.strip().lower()).strip("_") or f"column_{idx + 1}"
+        if name[0].isdigit():
+            name = f"c_{name}"
+        name = name[:60]
+        base, n = name, 2
+        while name in names:
+            name, n = f"{base}_{n}", n + 1
+        names.append(name)
+    return names
+
+
+def _coerce(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        return value or None
+    return value
+
+
+def _infer_column_type(values: list) -> str:
+    present = [v for v in values if v is not None]
+    if not present:
+        return "text"
+
+    def is_int(v):
+        if isinstance(v, bool):
+            return False
+        if isinstance(v, int):
+            return abs(v) <= _PG_BIGINT_MAX
+        return isinstance(v, str) and re.fullmatch(r"[+-]?\d{1,18}", v) is not None
+
+    def is_float(v):
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return True
+        try:
+            float(v)
+            return re.fullmatch(r"[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?", v) is not None
+        except (TypeError, ValueError):
+            return False
+
+    if all(is_int(v) for v in present):
+        return "bigint"
+    if all(is_float(v) for v in present):
+        return "double precision"
+    return "text"
+
+
+def build_table_spec(header: list[str], rows: list[list]) -> tuple[list[str], list[str], list[list]]:
+    """(column names, Postgres types, rows padded/truncated to the header and
+    with values converted to match those types)."""
+    columns = _column_names(header)
+    width = len(columns)
+    cells = [[_coerce(r[i]) if i < len(r) else None for i in range(width)] for r in rows]
+    types = [_infer_column_type([row[i] for row in cells]) for i in range(width)]
+    cast = {"bigint": int, "double precision": float, "text": str}
+    typed = [
+        [None if v is None else cast[types[i]](v) for i, v in enumerate(row)]
+        for row in cells
+    ]
+    return columns, types, typed
+
+
+def materialized_table_name(dataset_id: int, title: str | None) -> str:
+    slug = re.sub(r"\W+", "_", (title or "").lower()).strip("_")[:40]
+    return f"contrib_{dataset_id}_{slug}" if slug else f"contrib_{dataset_id}"
+
+
+def materialize_file_reference(dataset_id: int) -> dict:
+    """Load a published dataset's CSV/XLSX reference into a table and link it
+    in map_layer_info, replacing any earlier load. Returns a status dict and
+    never raises -- callers report it, they don't fail on it."""
+    from psycopg2 import sql
+    from psycopg2.extras import execute_values
+
+    try:
+        with _cursor() as cur:
+            cur.execute("SELECT * FROM dataset_source_config WHERE dataset_id = %s", (dataset_id,))
+            config = cur.fetchone()
+            dataset = _dataset_row(cur, dataset_id)
+        if not config or config.get("source_type") != "file" or not config.get("reference_uri"):
+            return {"status": "skipped", "detail": "Not a file reference"}
+
+        uri = config["reference_uri"]
+        file_format = (
+            config.get("file_format") or Path(urlsplit(uri).path or uri).suffix.lstrip(".")
+        ).lower()
+        header, rows = read_tabular_rows(_reference_bytes(uri), file_format)
+        columns, types, typed_rows = build_table_spec(header, rows)
+        table = materialized_table_name(dataset_id, dataset.get("title") if dataset else None)
+
+        with _cursor() as cur:
+            cur.execute(sql.SQL("DROP TABLE IF EXISTS {}").format(sql.Identifier(table)))
+            cur.execute(
+                sql.SQL("CREATE TABLE {} ({})").format(
+                    sql.Identifier(table),
+                    sql.SQL(", ").join(
+                        sql.SQL("{} {}").format(sql.Identifier(c), sql.SQL(t))
+                        for c, t in zip(columns, types)
+                    ),
+                )
+            )
+            if typed_rows:
+                execute_values(
+                    cur,
+                    sql.SQL("INSERT INTO {} VALUES %s").format(sql.Identifier(table)).as_string(cur),
+                    typed_rows,
+                )
+            # reltuples drives /node/catalog's row_count
+            cur.execute(sql.SQL("ANALYZE {}").format(sql.Identifier(table)))
+            cur.execute("DELETE FROM map_layer_info WHERE dataset_id = %s", (dataset_id,))
+            # No GeoServer layer exists for these, so no "<workspace>:" prefix --
+            # every reader accepts a bare table name.
+            cur.execute(
+                "INSERT INTO map_layer_info (dataset_id, geoserver_name) VALUES (%s, %s)",
+                (dataset_id, table),
+            )
+        return {"status": "loaded", "table": table, "rows": len(typed_rows), "columns": len(columns)}
+    except Exception as exc:
+        return {"status": "failed", "detail": str(exc)[:500]}
 
 
 async def verify_file_reference(dataset_id: int) -> dict:

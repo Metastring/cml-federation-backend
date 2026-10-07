@@ -67,3 +67,39 @@ def test_check_local_file_reference_reports_missing_file_and_directory(tmp_path)
     status, detail, _ = svc._check_local_file_reference(str(tmp_path), "csv")
     assert status == "unreachable"
     assert "Not a regular file" in detail
+
+
+def test_build_table_spec_infers_types_and_sanitises_names():
+    import app.dataset_registration_service as svc
+
+    header, rows = svc.read_tabular_rows(
+        b"LGD Code,state,MMR (per 100k),state,1st\n294,Karnataka,82.5,x,\n286,Kodagu,,y,7\n", "csv"
+    )
+    columns, types, typed = svc.build_table_spec(header, rows)
+
+    assert columns == ["lgd_code", "state", "mmr_per_100k", "state_2", "c_1st"]
+    assert types == ["bigint", "text", "double precision", "text", "bigint"]
+    assert typed == [[294, "Karnataka", 82.5, "x", None], [286, "Kodagu", None, "y", 7]]
+
+
+def test_read_tabular_rows_handles_xlsx_bom_and_blank_rows():
+    import io as _io
+    import app.dataset_registration_service as svc
+
+    header, rows = svc.read_tabular_rows("﻿a,b\n1,2\n,\n".encode(), "csv")
+    assert (header, rows) == (["a", "b"], [["1", "2"]])
+
+    workbook = Workbook()
+    workbook.active.append(["a", "b"])
+    workbook.active.append([1, 2.5])
+    buf = _io.BytesIO()
+    workbook.save(buf)
+    header, rows = svc.read_tabular_rows(buf.getvalue(), "xlsx")
+    assert (header, rows) == (["a", "b"], [[1, 2.5]])
+
+
+def test_materialized_table_name_is_stable_and_safe():
+    import app.dataset_registration_service as svc
+
+    assert svc.materialized_table_name(143, "New NFHS") == "contrib_143_new_nfhs"
+    assert svc.materialized_table_name(7, None) == "contrib_7"
